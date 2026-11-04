@@ -29,6 +29,7 @@ demand by a script in a later phase.
 | `nulls.csv` | Empty cells that must round-trip as nulls through XLSX/ODS |
 | `messy.csv` | One short and one long row for `csv.ragged_row` loss-report and strict-threshold tests |
 | `badquote.csv` | An unterminated quoted field for the `csv.bad_quote` loss event |
+| `regions.csv` | Region lookup table used with `sales.xlsx` for SQL import, aggregation, and join tests |
 
 ## Document fixtures
 

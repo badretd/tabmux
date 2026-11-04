@@ -17,7 +17,7 @@
 ## 1. Principles
 
 1. **Single binary by default.** The default build should install as one executable with no runtime.
-2. **Pure Rust where practical.** The only C/C++ dependency in v1 is DuckDB (optional). LibreOffice is an optional external bridge, not a linked dependency.
+2. **Pure Rust where practical.** The only C/C++ dependency in v1 is the optional SQL backend (DuckDB, or bundled SQLite in this offline build). LibreOffice is an optional external bridge, not a linked dependency.
 3. **Feature-gate everything heavy.** A user who only converts CSV should not compile DuckDB or spreadsheet writers.
 4. **One conversion engine, two interfaces.** Verb mode and pipeline/batch mode share the same table model and operation implementations.
 5. **Stable versions only.** Prefer stable releases; beta/RC crates are opt-in and documented.
@@ -34,7 +34,7 @@
 | `core` *(default)* | CSV/TSV, JSON/JSONL, inspection, select/head/count, safe writes, directory/ZIP batch ingestion, loss report, pipeline, ZIP container support, terminal output | clap, csv, serde, serde_json, toml, comfy-table, indicatif, tempfile, blake3, globset, walkdir, zip | Small |
 | `excel` | XLS/XLSX/XLSB/ODS read; XLSX/ODS write; multi-sheet; basic formatting | calamine, rust_xlsxwriter, spreadsheet-ods, quick-xml | Medium |
 | `html` | HTML table extraction, HTML table inventory | built-in parser (no external crate) | Small |
-| `sql-duckdb` | DuckDB export and read-only query | duckdb, arrow | **Large** (bundled C++) |
+| `sql-duckdb` | SQL export and read-only query (DuckDB contract) | rusqlite (offline fallback; native plan: duckdb, arrow) | Medium (bundled SQLite) |
 | `full` | All v1 features | `core` + `excel` + `html` + `sql-duckdb` | Medium–large |
 
 **Recommended presets**
@@ -575,6 +575,17 @@ timestamps and is deterministic.
 
 ---
 
+**Build note (Phase 10)**
+
+The `sql-duckdb` feature is implemented with `rusqlite 0.32` (bundled SQLite)
+because the offline registry used for this build does not contain the `duckdb`
+crate, and no DuckDB binary is available. The feature is optional and is not
+enabled by default. The CLI contract (`to duckdb`, `query`, transactions,
+read-only guard, verification) is unchanged; database files are SQLite files,
+and real DuckDB files are rejected explicitly. `rusqlite`/`libsqlite3-sys` are
+the only new build dependencies. Replacing the backend with the real `duckdb`
+crate later is isolated to `src/formats/duckdb.rs`.
+
 ## 4. Feature-to-dependency map (v1)
 
 | Feature area | Primary dependencies |
@@ -857,7 +868,7 @@ These are guardrails, not hard limits; measure on CI and adjust.
 | **7 Batch ingestion** | `walkdir`, `globset`, `zip` | Directory/ZIP batch conversion |
 | **8 Pipeline** | `toml`, `serde` | TOML manifest, dry-run, replay |
 | **9 Loss/provenance** | `serde_json`, `blake3` | Loss report, manifest, strict mode |
-| **10 DuckDB** | `duckdb` | Export + read-only query |
+| **10 DuckDB** | `rusqlite` (offline fallback; native plan: `duckdb`) | Export + read-only query |
 | **11 Quality gate** | `assert_cmd`, `predicates`, `insta`, `proptest`, `criterion` (dev) | Tests, fuzz targets, release checks |
 
 ---

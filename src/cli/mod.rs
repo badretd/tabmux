@@ -21,7 +21,8 @@ use crate::report::{self, Artifact};
 
 use self::args::{
     CellArgs, ConvertArgs, CountArgs, DedupeArgs, DiagnosticsArgs, FilterArgs, HeadArgs, MergeArgs,
-    MergeModeArg, ReadArgs, RenameArgs, RowArgs, RunArgs, SelectArgs, SheetsArgs, SortArgs,
+    MergeModeArg, QueryArgs, ReadArgs, RenameArgs, RowArgs, RunArgs, SelectArgs, SheetsArgs,
+    SortArgs, ToArgs, ToDuckdbArgs, ToTarget,
 };
 use self::reporting::{ReportContext, input_artifacts, output_artifact, table_events};
 
@@ -74,6 +75,10 @@ pub enum Command {
     Rename(RenameArgs),
     /// Drop exact duplicate rows.
     Dedupe(DedupeArgs),
+    /// Export a table to a SQL database.
+    To(ToArgs),
+    /// Run a read-only SQL query against a database.
+    Query(QueryArgs),
     /// Run a reproducible pipeline manifest.
     Run(RunArgs),
 }
@@ -95,8 +100,134 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Command::Sort(args) => sort_rows(args, diagnostics),
         Command::Rename(args) => rename_columns(args, diagnostics),
         Command::Dedupe(args) => dedupe_rows(args, diagnostics),
+        Command::To(args) => to_command(args, diagnostics),
+        Command::Query(args) => query_command(args),
         Command::Run(args) => run::run_pipeline(args, diagnostics),
     }
+}
+
+fn to_command(args: ToArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
+    match args.target {
+        ToTarget::Duckdb(args) => to_duckdb(args, diagnostics),
+    }
+}
+
+#[cfg(feature = "sql-duckdb")]
+fn to_duckdb(args: ToDuckdbArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
+    let (mut tables, _) = load_tables(&args.input, &args.read)?;
+    if tables.tables.len() != 1 {
+        let available = tables
+            .tables
+            .iter()
+            .map(|table| table.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(Error::usage(format!(
+            "to duckdb imports exactly one table, but {} were selected from '{}'{}",
+            tables.tables.len(),
+            args.input,
+            if available.is_empty() {
+                String::new()
+            } else {
+                format!(" (available: {available})")
+            }
+        )));
+    }
+
+    let table = tables.tables.remove(0);
+    print_warnings(
+        &table,
+        &diagnostics,
+        DiagnosticsScope::Write,
+        diagnostics.fidelity_report,
+    );
+
+    if args.dry_run {
+        eprintln!(
+            "tabmux: dry-run: would import {} into table '{}' in {} ({} rows x {} columns)",
+            table.source.context(),
+            args.table,
+            args.output,
+            table.row_count(),
+            table.width()
+        );
+        return Ok(());
+    }
+
+    let report = formats::duckdb::import_table(
+        Path::new(&args.output),
+        &args.table,
+        &table,
+        args.force,
+        args.verify,
+    )?;
+
+    if diagnostics.enabled() {
+        let mut suffix = String::new();
+        if report.replaced {
+            suffix.push_str("; replaced existing table");
+        }
+        if report.verified {
+            suffix.push_str("; verified");
+        }
+        suffix.push_str(&format!("; sha256:{}", &report.checksum[..16]));
+        eprintln!(
+            "tabmux: imported {} row(s) x {} column(s) from {} into table '{}' in {}{}",
+            report.rows,
+            report.columns,
+            table.source.context(),
+            report.table,
+            args.output,
+            suffix
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "sql-duckdb"))]
+fn to_duckdb(_args: ToDuckdbArgs, _diagnostics: DiagnosticsPolicy) -> Result<()> {
+    Err(Error::unsupported(
+        "DuckDB export is not compiled in (enable the sql-duckdb feature)",
+    ))
+}
+
+#[cfg(feature = "sql-duckdb")]
+fn query_command(args: QueryArgs) -> Result<()> {
+    use self::args::QueryFormat;
+
+    let result = formats::duckdb::query(Path::new(&args.database), &args.sql)?;
+
+    match args.format {
+        QueryFormat::Table => {
+            let table = result.to_table(&args.database, FormatId::Unknown);
+            write_stdout_pretty(&table, true)
+        }
+        QueryFormat::Csv | QueryFormat::Tsv => {
+            let format = if args.format == QueryFormat::Csv {
+                FormatId::Csv
+            } else {
+                FormatId::Tsv
+            };
+            let table = result.to_table(&args.database, format);
+            let options = formats::WriteOptions::for_format(format);
+            let mut buffer = Vec::new();
+            formats::write_table(&mut buffer, &table, format, &options)?;
+            crate::io::write_stdout(&buffer)
+        }
+        QueryFormat::Json => {
+            let mut rendered = serde_json::to_string_pretty(&result.to_json())
+                .map_err(|error| Error::data(format!("cannot serialize query result: {error}")))?;
+            rendered.push('\n');
+            crate::io::write_stdout(rendered.as_bytes())
+        }
+    }
+}
+
+#[cfg(not(feature = "sql-duckdb"))]
+fn query_command(_args: QueryArgs) -> Result<()> {
+    Err(Error::unsupported(
+        "SQL query support is not compiled in (enable the sql-duckdb feature)",
+    ))
 }
 
 fn print_matrix() -> Result<()> {
@@ -1652,93 +1783,8 @@ fn delimited_format(table: &Table) -> FormatId {
 }
 
 fn write_stdout_pretty(table: &Table, has_header: bool) -> Result<()> {
-    let rendered = render_pretty(table, has_header);
+    let rendered = crate::render::render_pretty(table, has_header);
     crate::io::write_stdout(rendered.as_bytes())
-}
-
-/// Render an aligned terminal table. Embedded newlines in cells become
-/// additional physical lines so multiline values stay readable and aligned.
-fn render_pretty(table: &Table, has_header: bool) -> String {
-    let width = table.width();
-    if width == 0 {
-        return String::new();
-    }
-
-    let header = table
-        .columns
-        .iter()
-        .map(|column| column.name.clone())
-        .collect::<Vec<_>>();
-    let rows = table
-        .rows
-        .iter()
-        .map(|row| {
-            (0..width)
-                .map(|column| {
-                    row.get(column)
-                        .unwrap_or(&CellValue::Null)
-                        .to_text("")
-                        .split('\n')
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-
-    let mut widths = vec![1usize; width];
-    if has_header {
-        for (column, name) in header.iter().enumerate() {
-            widths[column] = widths[column].max(name.chars().count());
-        }
-    }
-    for row in &rows {
-        for (column, lines) in row.iter().enumerate() {
-            for line in lines {
-                widths[column] = widths[column].max(line.chars().count());
-            }
-        }
-    }
-
-    let mut output = String::new();
-    if has_header {
-        let cells = header.iter().map(String::as_str).collect::<Vec<_>>();
-        push_pretty_line(&mut output, &cells, &widths);
-        let separator = widths
-            .iter()
-            .map(|width| "-".repeat(*width))
-            .collect::<Vec<_>>()
-            .join("-+-");
-        output.push_str(&separator);
-        output.push('\n');
-    }
-
-    for row in &rows {
-        let height = row.iter().map(Vec::len).max().unwrap_or(1);
-        for line_index in 0..height {
-            let cells = row
-                .iter()
-                .map(|lines| lines.get(line_index).map(String::as_str).unwrap_or(""))
-                .collect::<Vec<_>>();
-            push_pretty_line(&mut output, &cells, &widths);
-        }
-    }
-
-    output
-}
-
-fn push_pretty_line(output: &mut String, cells: &[&str], widths: &[usize]) {
-    let mut line = String::new();
-    for (column, cell) in cells.iter().enumerate() {
-        if column > 0 {
-            line.push_str(" | ");
-        }
-        line.push_str(cell);
-        let padding = widths[column].saturating_sub(cell.chars().count());
-        line.push_str(&" ".repeat(padding));
-    }
-    output.push_str(line.trim_end());
-    output.push('\n');
 }
 
 fn print_warnings(

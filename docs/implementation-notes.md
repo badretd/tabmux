@@ -411,6 +411,62 @@
   separate info lines because one is a reader transformation and the other is
   a writer materialization. `--verbose` prints the per-event details.
 
+## Phase 10 — DuckDB export and read-only query
+
+- **Backend deviation:** the offline registry used by this build has no
+  `duckdb` crate and there is no DuckDB binary on the machine. The
+  `sql-duckdb` feature is therefore backed by the embedded SQLite engine
+  (`rusqlite`, bundled) instead of bundled DuckDB. The command surface,
+  transaction semantics, read-only guard, import types, and verification are
+  the Phase 10 contract; the on-disk file is a SQLite database. A file whose
+  header begins with `DUCK` is rejected with a clear unsupported-feature error
+  rather than being misread. Replacing the backend with the real `duckdb` crate
+  later does not change the CLI.
+- **Feature gating:** `sql-duckdb` is not part of the default feature set and
+  is not enabled by `--all-features` in the minimal build unless requested.
+  Without the feature, `to duckdb` and `query` still parse and return exit code
+  4 with “enable the sql-duckdb feature”.
+- **Commands:** `tabmux to duckdb <input> --table NAME -o DB [--sheet NAME]
+  [--force] [--dry-run] [--verify]` imports exactly one selected table.
+  `--all-sheets` selects several and is rejected with the available table
+  names. `tabmux query <DB> "<SQL>" [-f table|csv|tsv|json]` prints one result
+  set to stdout; the default is an aligned terminal table.
+- **Import semantics:** the destination table is created inside a transaction.
+  A failure rolls back. A new database file is removed when its first import
+  fails, so a failed command leaves no partial database. Importing a second,
+  differently named table into an existing database is allowed (the S1
+  workflow); replacing an existing table or view requires `--force`. The
+  replacement and the insert run in one transaction, so the old table survives
+  a failed replacement.
+- **Type mapping:** `int` → `BIGINT`, `float` → `DOUBLE`, `bool` → `BOOLEAN`
+  (stored as 0/1), `decimal` → `TEXT` to preserve exact digits, dates/times →
+  `DATE`/`TIMESTAMP`/`TIME` ISO text, text/error → `TEXT`, null → SQL null.
+  Columns are inferred with the same conservative rules as workbook output
+  (`007` stays text, mixed columns become text, integral floats become ints).
+  Every cell is normalized to its final column type before insert so SQLite's
+  declared affinity cannot change the representation behind the verifier's
+  back. Non-finite floats and duplicate/empty column names are hard errors,
+  not silent drops.
+- **Verification:** `--verify` re-reads the imported rows inside the
+  transaction and compares row counts and every value, including boolean 0/1
+  and integral-float normalization. The import summary reports a SHA-256
+  checksum of the imported values. Verification failures roll the import back.
+- **Query safety:** the database is opened with `SQLITE_OPEN_READ_ONLY`, and
+  the prepared statement must report `readonly()`. The input must contain
+  exactly one statement; a small splitter ignores semicolons inside strings,
+  quoted identifiers, and comments. `drop`, `delete`, `create`, `attach`, and
+  multi-statement input fail with exit code 2 before touching data.
+- **Query output:** `table` uses the shared terminal renderer, `csv`/`tsv` use
+  the normal delimited writer (header plus rows), and `json` is a pretty-printed
+  array of objects with typed numbers and booleans. SQL errors and missing
+  databases are data errors with the database path in the message.
+- **Fixtures:** `fixtures/sales.xlsx#Sales` and `fixtures/regions.csv` cover
+  import, count, aggregation, join, replacement, and read-only checks.
+- **Smoke test:** the Phase 10 block detects whether the binary was built with
+  `sql-duckdb`. `./scripts/smoke.sh` skips with an explicit message when the
+  feature is absent; `TABMUX_FEATURES=sql-duckdb ./scripts/smoke.sh` runs the
+  full import/query/guard sequence.
+
 ## Diagnostics policy
 
 - **Default (`summary`):** read-only commands show only warnings/errors that
@@ -459,7 +515,9 @@
 Everything else follows the devplan scope: CSV/TSV/JSON and XLSX/ODS
 read/write, HTML table ingestion, split/stack, row/cell inspection,
 merge/concat with basic transforms, directory/ZIP batch mode, the reproducible
-pipeline manifest, the loss report, provenance manifest, verification, and the
-warning-threshold strict policy are implemented. DuckDB export/query (Phase 10)
-and hardening/release work are still ahead. There is no network, and no
-`fs::write` in command code. All file outputs go through `io::SafeWriter`.
+pipeline manifest, the loss report, provenance manifest, verification, the
+warning-threshold strict policy, and the feature-gated SQL export/query surface
+are implemented. Hardening and release packaging (Phases 11–12) are still
+ahead. There is no network, and no `fs::write` in command code. Table file
+outputs go through `io::SafeWriter`; the SQL database is written by its engine
+inside a transaction (see the Phase 10 note).

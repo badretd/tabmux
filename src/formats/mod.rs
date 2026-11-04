@@ -13,6 +13,8 @@ use crate::model::{SourceRef, Table, TableSet};
 
 pub mod archive;
 pub mod csv;
+#[cfg(feature = "sql-duckdb")]
+pub mod duckdb;
 #[cfg(feature = "html")]
 pub mod html;
 pub mod json;

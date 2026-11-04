@@ -15,7 +15,11 @@ cd "$(dirname "$0")/.."
 
 BIN="${1:-}"
 if [[ -z "$BIN" ]]; then
-  cargo build --quiet
+  if [[ -n "${TABMUX_FEATURES:-}" ]]; then
+    cargo build --quiet --features "$TABMUX_FEATURES"
+  else
+    cargo build --quiet
+  fi
   BIN="target/debug/tabmux"
 fi
 
@@ -850,5 +854,86 @@ grep -q '"outputs"' "$TMP_DIR/pipeline-manifest.json" \
 grep -q '"deterministic": true' "$TMP_DIR/pipeline-manifest.json" \
   || fail "pipeline manifest is not marked deterministic"
 echo "pipeline report and manifest: ok"
+
+section "Phase 10: DuckDB export and simple query"
+
+SQL_DB="$TMP_DIR/warehouse.duckdb"
+set +e
+"$BIN" to duckdb fixtures/a.csv --table smoke_probe -o "$TMP_DIR/smoke-probe.duckdb" \
+  --dry-run >/dev/null 2>"$TMP_DIR/sql-probe.err"
+sql_probe_status=$?
+set -e
+
+if grep -q 'not compiled in' "$TMP_DIR/sql-probe.err"; then
+  echo "sql-duckdb feature is not compiled in; run with TABMUX_FEATURES=sql-duckdb: skipped"
+else
+  [[ "$sql_probe_status" -eq 0 ]] \
+    || fail "sql-duckdb dry-run probe exited $sql_probe_status"
+  grep -q 'dry-run' "$TMP_DIR/sql-probe.err" \
+    || fail "sql-duckdb dry-run probe printed no plan"
+  [[ ! -e "$TMP_DIR/smoke-probe.duckdb" ]] \
+    || fail "sql-duckdb dry-run created a database"
+
+  "$BIN" to duckdb fixtures/sales.xlsx --sheet Sales --table sales -o "$SQL_DB" \
+    --verify 2>"$TMP_DIR/sql-import.err"
+  grep -q 'imported 4 row(s) x 6 column(s)' "$TMP_DIR/sql-import.err" \
+    || fail "DuckDB import summary was missing"
+  grep -q 'verified' "$TMP_DIR/sql-import.err" \
+    || fail "DuckDB import --verify was not reported"
+
+  "$BIN" to duckdb fixtures/regions.csv --table regions -o "$SQL_DB" \
+    >/dev/null 2>&1
+
+  count="$("$BIN" query "$SQL_DB" 'select count(*) as n from sales' -f csv)"
+  [[ "$count" == $'n\n4' ]] || fail "DuckDB count query produced '$count'"
+
+  totals="$("$BIN" query "$SQL_DB" \
+    'select region, sum(amount) as total from sales where region is not null group by region order by total desc' \
+    -f csv)"
+  [[ "$totals" == $'region,total\nNorth,320\nSouth,80.5' ]] \
+    || fail "DuckDB aggregate query produced '$totals'"
+
+  json="$("$BIN" query "$SQL_DB" \
+    'select id, name from sales order by id limit 2' -f json)"
+  grep -q '"name": "Alice"' <<<"$json" \
+    || fail "DuckDB JSON output is missing Alice"
+
+  join="$("$BIN" query "$SQL_DB" \
+    'select s.name, r.manager from sales s join regions r on s.region = r.region where s.name is not null order by s.name' \
+    -f csv)"
+  [[ "$join" == $'name,manager\nAlice,Alice\nBob,Bob\nCarol,Alice' ]] \
+    || fail "DuckDB join query produced '$join'"
+
+  set +e
+  "$BIN" query "$SQL_DB" 'drop table sales' >/dev/null 2>"$TMP_DIR/sql-guard.err"
+  guard_status=$?
+  "$BIN" query "$SQL_DB" 'select 1; drop table sales' \
+    >/dev/null 2>"$TMP_DIR/sql-multi.err"
+  multi_status=$?
+  "$BIN" to duckdb fixtures/regions.csv --table sales -o "$SQL_DB" \
+    >/dev/null 2>"$TMP_DIR/sql-force.err"
+  force_status=$?
+  set -e
+  [[ "$guard_status" -eq 2 ]] \
+    || fail "read-only query guard exited $guard_status, expected 2"
+  grep -q 'read-only' "$TMP_DIR/sql-guard.err" \
+    || fail "read-only query guard did not explain itself"
+  [[ "$multi_status" -eq 2 ]] \
+    || fail "multi-statement query exited $multi_status, expected 2"
+  grep -q 'exactly one read-only statement' "$TMP_DIR/sql-multi.err" \
+    || fail "multi-statement query guard did not explain itself"
+  [[ "$force_status" -eq 1 ]] \
+    || fail "table replacement without --force exited $force_status, expected 1"
+  grep -q 'already exists' "$TMP_DIR/sql-force.err" \
+    || fail "table replacement error did not name the existing table"
+  [[ "$("$BIN" query "$SQL_DB" 'select count(*) as n from sales' -f csv)" \
+    == $'n\n4' ]] || fail "a guarded query changed the sales table"
+
+  "$BIN" to duckdb fixtures/sales.xlsx --sheet Sales --table sales -o "$SQL_DB" \
+    --force >/dev/null 2>&1
+  [[ "$("$BIN" query "$SQL_DB" 'select count(*) as n from sales' -f csv)" \
+    == $'n\n4' ]] || fail "table replacement with --force lost rows"
+  echo "DuckDB import, query, join, and read-only guard: ok"
+fi
 
 printf '\nsmoke: all checks passed\n'

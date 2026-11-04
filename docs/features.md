@@ -158,6 +158,12 @@ tabmux query warehouse.duckdb "select * from sales limit 10" -f csv
 
 **Requirements:** type inference, create/replace table, transaction/rollback, row-count verification, and read-only query. No federation, upsert, query cache, `EXPLAIN` UI, or network access in v1.
 
+> **Build note (2026-11-04):** the `sql-duckdb` feature currently uses the
+> embedded SQLite engine because the offline registry has no `duckdb` crate.
+> The CLI and transaction/read-only guarantees are the same; the database file
+> is SQLite rather than DuckDB's native format. See
+> [`implementation-notes.md`](./implementation-notes.md).
+
 ### S2. Print a specific row or column to the terminal
 
 ```sh

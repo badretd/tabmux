@@ -30,6 +30,12 @@ html = []
 # Library-backed XLSX writer used by the default build. A build with only
 # `excel` enabled keeps the built-in manual writer as a fallback.
 rust_xlsxwriter = ["excel", "dep:rust_xlsxwriter"]
+# Optional SQL export/query. The real `duckdb` crate is not available in the
+# offline registry used by this build, so the feature is backed by the embedded
+# SQLite engine with the same CLI contract. See docs/implementation-notes.md.
+sql-duckdb = ["core", "dep:rusqlite"]
+# Everything in v1, including the optional SQL export/query surface.
+full = ["default", "sql-duckdb"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
@@ -53,6 +59,11 @@ zip = { version = "9.1", default-features = false, features = ["deflate"], optio
 # not expose for the ODS reader.
 quick-xml = { version = "0.42", optional = true }
 rust_xlsxwriter = { version = "0.102", features = ["chrono", "zlib", "constant_memory", "rust_decimal"], optional = true }
+
+# Embedded SQL engine for the sql-duckdb feature. The offline registry does not
+# provide the DuckDB crate; rusqlite keeps the same export/query contract while
+# the environment cannot build bundled DuckDB.
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 sha2 = "0.10"

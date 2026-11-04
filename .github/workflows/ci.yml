@@ -39,3 +39,6 @@ jobs:
 
       - name: Run smoke test
         run: ./scripts/smoke.sh
+
+      - name: Run smoke test with sql-duckdb
+        run: TABMUX_FEATURES=sql-duckdb ./scripts/smoke.sh

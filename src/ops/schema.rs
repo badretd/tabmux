@@ -208,6 +208,76 @@ pub fn infer_cell_type(cell: &CellValue) -> ColumnType {
     }
 }
 
+/// Infer conservative types for an all-text table and convert the cells.
+///
+/// This is the shared rule used by workbook output and SQL import. Delimited
+/// input stays text for byte-faithful CSV/TSV conversion; only formats that
+/// promise native values (workbooks, SQL tables) run this pass.
+pub fn infer_text_types(table: &mut Table) {
+    if table.width() == 0 {
+        return;
+    }
+
+    let mut inferred = vec![ColumnType::Null; table.width()];
+    for row in &table.rows {
+        for (index, cell) in row.iter().enumerate().take(inferred.len()) {
+            inferred[index] = inferred[index].merge(infer_cell_type(cell));
+        }
+    }
+
+    for (index, inferred_type) in inferred.into_iter().enumerate() {
+        let current = table.columns[index].ty;
+        let target = if matches!(current, ColumnType::Text | ColumnType::Null) {
+            inferred_type
+        } else {
+            current
+        };
+        table.columns[index].ty = target;
+    }
+
+    for row in &mut table.rows {
+        for (index, cell) in row.iter_mut().enumerate().take(table.columns.len()) {
+            let target = table.columns[index].ty;
+            *cell = convert_text_cell(cell, target);
+        }
+    }
+}
+
+fn convert_text_cell(cell: &CellValue, target: ColumnType) -> CellValue {
+    let CellValue::Text(text) = cell else {
+        return cell.clone();
+    };
+    if text.is_empty() {
+        return CellValue::Null;
+    }
+
+    match target {
+        ColumnType::Null => CellValue::Null,
+        ColumnType::Bool => match text.as_str() {
+            "true" => CellValue::Bool(true),
+            "false" => CellValue::Bool(false),
+            _ => cell.clone(),
+        },
+        ColumnType::Int => parse_safe_int(text)
+            .map(CellValue::Int)
+            .unwrap_or_else(|| cell.clone()),
+        ColumnType::Float => parse_safe_float(text)
+            .map(CellValue::Float)
+            .or_else(|| parse_safe_int(text).map(|value| CellValue::Float(value as f64)))
+            .unwrap_or_else(|| cell.clone()),
+        ColumnType::Date => parse_date(text)
+            .map(CellValue::Date)
+            .unwrap_or_else(|| cell.clone()),
+        ColumnType::DateTime => parse_datetime(text)
+            .map(CellValue::DateTime)
+            .unwrap_or_else(|| cell.clone()),
+        ColumnType::Time => parse_time(text)
+            .map(CellValue::Time)
+            .unwrap_or_else(|| cell.clone()),
+        ColumnType::Decimal | ColumnType::Text | ColumnType::Error => cell.clone(),
+    }
+}
+
 /// Whether two non-null types cannot be reconciled without falling back to text.
 pub fn types_conflict(reference: ColumnType, candidate: ColumnType) -> bool {
     if matches!(reference, ColumnType::Null) || matches!(candidate, ColumnType::Null) {

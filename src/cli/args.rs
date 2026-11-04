@@ -1,6 +1,6 @@
 //! Shared command-line argument groups.
 
-use clap::{ArgGroup, Args, ValueEnum};
+use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 
 use crate::diagnostics::{DiagnosticsLevel, DiagnosticsPolicy};
 use crate::error::{Error, Result};
@@ -673,6 +673,81 @@ pub struct RowArgs {
 
     #[command(flatten)]
     pub display: DisplayArgs,
+}
+
+/// Export a table to a SQL database.
+#[derive(Debug, Clone, Args)]
+pub struct ToArgs {
+    #[command(subcommand)]
+    pub target: ToTarget,
+}
+
+/// Database export targets.
+#[derive(Debug, Clone, Subcommand)]
+pub enum ToTarget {
+    /// Import one table into a DuckDB database.
+    #[command(name = "duckdb")]
+    Duckdb(ToDuckdbArgs),
+}
+
+/// Import one table into a DuckDB database.
+#[derive(Debug, Clone, Args)]
+pub struct ToDuckdbArgs {
+    /// Input path, or - for stdin.
+    #[arg(value_name = "INPUT")]
+    pub input: String,
+
+    /// Destination table name.
+    #[arg(long, value_name = "NAME", required = true)]
+    pub table: String,
+
+    /// Destination database path.
+    #[arg(short = 'o', long = "output", value_name = "DB", required = true)]
+    pub output: String,
+
+    #[command(flatten)]
+    pub read: ReadArgs,
+
+    /// Replace an existing destination table.
+    #[arg(short = 'y', long)]
+    pub force: bool,
+
+    /// Validate and describe the import without writing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Re-read the imported table and compare values and row counts.
+    #[arg(long)]
+    pub verify: bool,
+}
+
+/// Output format for a SQL query result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum QueryFormat {
+    /// Aligned terminal table.
+    Table,
+    /// Comma-separated values.
+    Csv,
+    /// Tab-separated values.
+    Tsv,
+    /// JSON array of objects.
+    Json,
+}
+
+/// Run a read-only SQL query against a DuckDB database.
+#[derive(Debug, Clone, Args)]
+pub struct QueryArgs {
+    /// Database path.
+    #[arg(value_name = "DB")]
+    pub database: String,
+
+    /// SQL query. Only one read-only statement is allowed.
+    #[arg(value_name = "SQL")]
+    pub sql: String,
+
+    /// Result format.
+    #[arg(short = 'f', long = "format", value_enum, default_value_t = QueryFormat::Table)]
+    pub format: QueryFormat,
 }
 
 /// Print one cell by row number and column name.

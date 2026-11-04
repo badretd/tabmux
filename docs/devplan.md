@@ -1190,6 +1190,35 @@ Expected:
 - No write path other than `to duckdb`.
 - Query has a hard read-only guard.
 
+**Implementation note (2026-11-04)**
+
+- **Backend:** the offline registry does not provide the `duckdb` crate and the
+  machine has no DuckDB binary. The `sql-duckdb` feature is backed by bundled
+  SQLite (`rusqlite 0.32`) with the same CLI, import, transaction, verification,
+  and read-only-query contract. Database files are SQLite files; files with
+  DuckDB's `DUCK` magic are rejected with an unsupported-feature error instead
+  of being misread. Replacing the backend later is confined to
+  `src/formats/duckdb.rs`.
+- **Commands:** `to duckdb <input> --table NAME -o DB` imports exactly one
+  selected table and rejects multi-table selections with the available names.
+  `query <DB> "<SQL>" -f table|csv|tsv|json` runs one statement; the default is
+  an aligned terminal table.
+- **Import:** create/replace happens in one transaction. A failed import rolls
+  back; a new database is removed if its first import fails. Adding a new table
+  to an existing database is allowed, while replacing an existing table/view
+  requires `--force`.
+- **Types and verification:** conservative inference matches workbook output.
+  Cells are normalized to their final column type before insert so affinity
+  cannot change values behind the verifier. `--verify` compares row counts and
+  every value inside the transaction and reports a value SHA-256.
+- **Read-only guard:** the database is opened read-only, the statement must
+  report `readonly()`, and exactly one statement is accepted. Semicolons inside
+  strings, quoted identifiers, and comments do not split statements.
+- **Fixtures and smoke:** `fixtures/sales.xlsx#Sales` and
+  `fixtures/regions.csv` cover import, count, aggregate, join, replacement, and
+  guards. `./scripts/smoke.sh` skips Phase 10 when the feature is absent;
+  `TABMUX_FEATURES=sql-duckdb ./scripts/smoke.sh` runs it.
+
 ---
 
 ### Phase 11 — Hardening, fixtures, conformance

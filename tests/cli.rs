@@ -2209,6 +2209,26 @@ fn html_sheet_per_table_requires_a_workbook_output() {
     assert!(stderr(&output).contains("--sheet-per-table"));
 }
 
+#[cfg(not(feature = "sql-duckdb"))]
+#[test]
+fn sql_commands_explain_the_missing_feature() {
+    let output = tabmux()
+        .args(["to", "duckdb"])
+        .arg(fixture("a.csv"))
+        .args(["--table", "a", "-o", "unused.duckdb"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert!(stderr(&output).contains("sql-duckdb"));
+
+    let output = tabmux()
+        .args(["query", "unused.duckdb", "select 1"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert!(stderr(&output).contains("sql-duckdb"));
+}
+
 #[cfg(feature = "html")]
 #[test]
 fn html_unknown_table_lists_available_tables() {

@@ -15,7 +15,7 @@ use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
 use crate::error::{Error, Result};
 use crate::formats::FormatId;
-use crate::model::{CellValue, ColumnType, SourceRef, Table};
+use crate::model::{SourceRef, Table};
 use crate::ops::schema;
 
 /// Excel's hard limit for worksheet names.
@@ -40,68 +40,7 @@ pub fn prepare_table(table: &Table) -> Table {
 
 /// Infer conservative types for an all-text table and convert the cells.
 pub fn infer_text_types(table: &mut Table) {
-    if table.width() == 0 {
-        return;
-    }
-
-    let mut inferred = vec![ColumnType::Null; table.width()];
-    for row in &table.rows {
-        for (index, cell) in row.iter().enumerate().take(inferred.len()) {
-            inferred[index] = inferred[index].merge(schema::infer_cell_type(cell));
-        }
-    }
-
-    for (index, inferred_type) in inferred.into_iter().enumerate() {
-        let current = table.columns[index].ty;
-        let target = if matches!(current, ColumnType::Text | ColumnType::Null) {
-            inferred_type
-        } else {
-            current
-        };
-        table.columns[index].ty = target;
-    }
-
-    for row in &mut table.rows {
-        for (index, cell) in row.iter_mut().enumerate().take(table.columns.len()) {
-            let target = table.columns[index].ty;
-            *cell = convert_cell(cell, target);
-        }
-    }
-}
-
-fn convert_cell(cell: &CellValue, target: ColumnType) -> CellValue {
-    let CellValue::Text(text) = cell else {
-        return cell.clone();
-    };
-    if text.is_empty() {
-        return CellValue::Null;
-    }
-
-    match target {
-        ColumnType::Null => CellValue::Null,
-        ColumnType::Bool => match text.as_str() {
-            "true" => CellValue::Bool(true),
-            "false" => CellValue::Bool(false),
-            _ => cell.clone(),
-        },
-        ColumnType::Int => schema::parse_safe_int(text)
-            .map(CellValue::Int)
-            .unwrap_or_else(|| cell.clone()),
-        ColumnType::Float => schema::parse_safe_float(text)
-            .map(CellValue::Float)
-            .or_else(|| schema::parse_safe_int(text).map(|value| CellValue::Float(value as f64)))
-            .unwrap_or_else(|| cell.clone()),
-        ColumnType::Date => schema::parse_date(text)
-            .map(CellValue::Date)
-            .unwrap_or_else(|| cell.clone()),
-        ColumnType::DateTime => schema::parse_datetime(text)
-            .map(CellValue::DateTime)
-            .unwrap_or_else(|| cell.clone()),
-        ColumnType::Time => schema::parse_time(text)
-            .map(CellValue::Time)
-            .unwrap_or_else(|| cell.clone()),
-        ColumnType::Decimal | ColumnType::Text | ColumnType::Error => cell.clone(),
-    }
+    schema::infer_text_types(table);
 }
 
 /// Sanitise a worksheet name for Excel's rules. ODS uses the same rules so a
@@ -306,6 +245,7 @@ pub fn cell_reference(row: usize, column: usize) -> String {
 mod tests {
     use super::*;
     use crate::model::Column;
+    use crate::model::{CellValue, ColumnType};
 
     fn table(columns: &[(&str, ColumnType)], rows: Vec<Vec<CellValue>>) -> Table {
         let source = SourceRef::new("data.csv", FormatId::Csv);
