@@ -1,0 +1,2 @@
+{"id":1,"user":{"name":"Alice","tags":["a","b"]},"amount":12.5}
+{"id":2,"user":{"name":"Bob"},"amount":null,"active":true}

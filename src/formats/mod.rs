@@ -1,0 +1,364 @@
+//! Format registry and capability matrix.
+//!
+//! This is intentionally the living scope guard for v1: if a format is not in
+//! [`FORMATS`], no command may read or write it. New formats arrive only with a
+//! reader/writer, a loss policy, and checked-in fixtures.
+
+use std::fmt::Write as _;
+use std::io::Write;
+use std::path::Path;
+
+use crate::error::{Error, Result};
+use crate::model::{SourceRef, Table};
+
+pub mod csv;
+pub mod json;
+
+/// Stable identifier for a supported input/output format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FormatId {
+    Csv,
+    Tsv,
+    Xlsx,
+    Ods,
+    Html,
+    Json,
+}
+
+impl FormatId {
+    /// Canonical lowercase name used by the CLI and reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::Tsv => "tsv",
+            Self::Xlsx => "xlsx",
+            Self::Ods => "ods",
+            Self::Html => "html",
+            Self::Json => "json",
+        }
+    }
+
+    /// Detect a format from a filename extension.
+    ///
+    /// `jsonl`/`ndjson` are treated as [`FormatId::Json`] because they share
+    /// the JSON reader. XLS/XLSB are deliberately absent until their phase
+    /// lands; callers must report `format.unsupported` for them.
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        match extension
+            .trim_start_matches('.')
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "csv" => Some(Self::Csv),
+            "tsv" | "tab" => Some(Self::Tsv),
+            "xlsx" => Some(Self::Xlsx),
+            "ods" => Some(Self::Ods),
+            "html" | "htm" => Some(Self::Html),
+            "json" | "jsonl" | "ndjson" => Some(Self::Json),
+            _ => None,
+        }
+    }
+}
+
+/// What a format can do in this build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capability {
+    /// Can be read as an input.
+    pub read: bool,
+    /// Can be written as an output.
+    pub write: bool,
+    /// Can be processed without materializing the whole table (where the
+    /// reader/writer supports it).
+    pub stream: bool,
+    /// Can contain more than one table (workbook sheets, HTML tables, archive
+    /// members).
+    pub multi_table: bool,
+}
+
+impl Capability {
+    const fn new(read: bool, write: bool, stream: bool, multi_table: bool) -> Self {
+        Self {
+            read,
+            write,
+            stream,
+            multi_table,
+        }
+    }
+}
+
+/// A row in the format matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormatInfo {
+    /// Stable identifier.
+    pub id: FormatId,
+    /// Name printed in the matrix.
+    pub name: &'static str,
+    /// Capabilities in this build.
+    pub capability: Capability,
+    /// Short human-readable notes.
+    pub notes: &'static str,
+}
+
+/// The complete v1 conversion matrix.
+///
+/// Only in-scope formats belong here. Directories and ZIP archives are input
+/// containers handled by the batch phase; they are not table formats and get
+/// their own registry once that phase lands.
+pub const FORMATS: &[FormatInfo] = &[
+    FormatInfo {
+        id: FormatId::Csv,
+        name: "csv",
+        capability: Capability::new(true, true, true, false),
+        notes: "RFC 4180 + dialects",
+    },
+    FormatInfo {
+        id: FormatId::Tsv,
+        name: "tsv",
+        capability: Capability::new(true, true, true, false),
+        notes: "",
+    },
+    FormatInfo {
+        id: FormatId::Xlsx,
+        name: "xlsx",
+        capability: Capability::new(true, true, false, true),
+        notes: "basic fidelity",
+    },
+    FormatInfo {
+        id: FormatId::Ods,
+        name: "ods",
+        capability: Capability::new(true, true, false, true),
+        notes: "basic fidelity",
+    },
+    FormatInfo {
+        id: FormatId::Html,
+        name: "html",
+        capability: Capability::new(true, false, false, true),
+        notes: "table extraction",
+    },
+    FormatInfo {
+        id: FormatId::Json,
+        name: "json",
+        capability: Capability::new(true, false, true, false),
+        notes: "JSON/JSONL input",
+    },
+];
+
+/// Return the format registry.
+pub const fn registry() -> &'static [FormatInfo] {
+    FORMATS
+}
+
+/// Look up a format by its stable identifier.
+pub fn find(id: FormatId) -> Option<&'static FormatInfo> {
+    FORMATS.iter().find(|info| info.id == id)
+}
+
+/// Render the capability matrix shown by `tabmux formats`.
+pub fn render_matrix() -> String {
+    let mut out = String::with_capacity(512);
+    let _ = writeln!(
+        out,
+        "{:<8} {:<5} {:<6} {:<12} NOTES",
+        "FORMAT", "READ", "WRITE", "MULTI-TABLE"
+    );
+
+    for info in FORMATS {
+        let line = format!(
+            "{:<8} {:<5} {:<6} {:<12} {}",
+            info.name,
+            yes_no(info.capability.read),
+            yes_no(info.capability.write),
+            yes_no(info.capability.multi_table),
+            info.notes
+        );
+        let _ = writeln!(out, "{}", line.trim_end());
+    }
+
+    out
+}
+
+const fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+/// Options shared by all readers.
+#[derive(Debug, Clone)]
+pub struct ReadOptions {
+    pub delimiter: Option<u8>,
+    pub has_header: bool,
+    pub ragged: csv::RaggedPolicy,
+    pub encoding: Option<String>,
+}
+
+impl Default for ReadOptions {
+    fn default() -> Self {
+        Self {
+            delimiter: None,
+            has_header: true,
+            ragged: csv::RaggedPolicy::Error,
+            encoding: None,
+        }
+    }
+}
+
+/// Options shared by all writers.
+#[derive(Debug, Clone)]
+pub struct WriteOptions {
+    /// Override the format's default delimiter.
+    pub delimiter: Option<u8>,
+    pub has_header: bool,
+    pub line_ending: csv::LineEnding,
+    pub null: String,
+}
+
+impl WriteOptions {
+    pub fn for_format(format: FormatId) -> Self {
+        Self {
+            delimiter: default_delimiter(format),
+            has_header: true,
+            line_ending: csv::LineEnding::Lf,
+            null: String::new(),
+        }
+    }
+}
+
+/// Default delimiter for a delimited format.
+pub const fn default_delimiter(format: FormatId) -> Option<u8> {
+    match format {
+        FormatId::Csv => Some(b','),
+        FormatId::Tsv => Some(b'\t'),
+        _ => None,
+    }
+}
+
+/// Detect a format from a path extension.
+pub fn detect_path(path: &Path) -> Option<FormatId> {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .and_then(FormatId::from_extension)
+}
+
+/// Read a single table from already-loaded bytes.
+pub fn read_table(
+    source: &SourceRef,
+    bytes: &[u8],
+    format: FormatId,
+    options: &ReadOptions,
+) -> Result<Table> {
+    match format {
+        FormatId::Csv | FormatId::Tsv => csv::read(
+            source,
+            bytes,
+            format == FormatId::Tsv,
+            &csv::ReadOptions {
+                delimiter: options.delimiter,
+                has_header: options.has_header,
+                ragged: options.ragged,
+                encoding: options.encoding.clone(),
+            },
+        ),
+        FormatId::Json => json::read(
+            source,
+            bytes,
+            &json::ReadOptions {
+                encoding: options.encoding.clone(),
+            },
+        ),
+        FormatId::Xlsx | FormatId::Ods | FormatId::Html => Err(Error::unsupported(format!(
+            "reading {} is not implemented yet",
+            format.label()
+        ))),
+    }
+}
+
+/// Write a table to a delimited output.
+pub fn write_table<W: Write>(
+    output: W,
+    table: &Table,
+    format: FormatId,
+    options: &WriteOptions,
+) -> Result<()> {
+    let delimiter = match format {
+        FormatId::Csv | FormatId::Tsv => options
+            .delimiter
+            .or_else(|| default_delimiter(format))
+            .unwrap_or(b','),
+        _ => {
+            return Err(Error::unsupported(format!(
+                "writing {} is not implemented yet",
+                format.label()
+            )));
+        }
+    };
+
+    csv::write(
+        output,
+        table,
+        &csv::WriteOptions {
+            delimiter,
+            has_header: options.has_header,
+            line_ending: options.line_ending,
+            null: options.null.clone(),
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_contains_only_v1_formats_in_a_stable_order() {
+        let names: Vec<_> = registry().iter().map(|info| info.name).collect();
+        assert_eq!(names, ["csv", "tsv", "xlsx", "ods", "html", "json"]);
+    }
+
+    #[test]
+    fn matrix_has_the_documented_header_and_rows() {
+        let matrix = render_matrix();
+        let lines: Vec<_> = matrix.lines().collect();
+
+        assert_eq!(
+            lines[0], "FORMAT   READ  WRITE  MULTI-TABLE  NOTES",
+            "matrix header changed:\n{matrix}"
+        );
+        assert_eq!(lines.len(), registry().len() + 1);
+        assert_eq!(
+            lines[1],
+            "csv      yes   yes    no           RFC 4180 + dialects"
+        );
+        assert_eq!(
+            lines[5],
+            "html     yes   no     yes          table extraction"
+        );
+        assert_eq!(
+            lines[6],
+            "json     yes   no     no           JSON/JSONL input"
+        );
+    }
+
+    #[test]
+    fn extension_detection_is_case_insensitive() {
+        assert_eq!(FormatId::from_extension("CSV"), Some(FormatId::Csv));
+        assert_eq!(FormatId::from_extension(".xlsx"), Some(FormatId::Xlsx));
+        assert_eq!(FormatId::from_extension("jsonl"), Some(FormatId::Json));
+        assert_eq!(FormatId::from_extension("txt"), None);
+    }
+
+    #[test]
+    fn capabilities_match_the_scope() {
+        let csv = find(FormatId::Csv).expect("csv is registered");
+        assert!(csv.capability.read && csv.capability.write);
+        assert!(!csv.capability.multi_table);
+
+        let xlsx = find(FormatId::Xlsx).expect("xlsx is registered");
+        assert!(xlsx.capability.multi_table);
+
+        let html = find(FormatId::Html).expect("html is registered");
+        assert!(html.capability.read);
+        assert!(!html.capability.write);
+
+        let json = find(FormatId::Json).expect("json is registered");
+        assert!(!json.capability.multi_table);
+    }
+}

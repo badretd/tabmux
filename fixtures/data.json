@@ -1,0 +1,4 @@
+[
+  {"id": 1, "region": "EU", "amount": 100},
+  {"id": 2, "region": "US", "amount": 250}
+]
