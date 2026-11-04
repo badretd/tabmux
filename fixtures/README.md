@@ -22,6 +22,9 @@ demand by a script in a later phase.
 | `data.json` | JSON array of objects |
 | `data.jsonl` | JSONL input with nested objects, arrays, and nulls |
 | `wide.csv` | Multiline and quoted cells for row/cell addressing and pretty output |
+| `a.csv`, `b.csv` | Compatible schemas for multi-input workbook assembly (and the Phase 5 merge fixtures) |
+| `typed.csv` | Int, float, bool, date, datetime, time, and a leading-zero text code for native-type workbook tests |
+| `nulls.csv` | Empty cells that must round-trip as nulls through XLSX/ODS |
 
 ## Workbook fixtures
 

@@ -43,7 +43,7 @@ pub struct Cli {
 pub enum Command {
     /// Show the supported format matrix.
     Formats,
-    /// Convert one input to one output.
+    /// Convert one or more inputs to one output.
     Convert(ConvertArgs),
     /// List the sheets in a workbook.
     Sheets(SheetsArgs),
@@ -82,14 +82,9 @@ fn print_matrix() -> Result<()> {
 }
 
 fn convert(args: ConvertArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
-    let output = args.resolve_output()?.to_owned();
-    reject_self_overwrite(&args.input, &output)?;
+    let (inputs, output) = args.resolve()?;
+    reject_self_overwrite(&inputs, &output)?;
 
-    if args.read.sheets.all_sheets && !args.split_sheets && !args.stack {
-        return Err(Error::usage(
-            "--all-sheets requires --split-sheets or --stack",
-        ));
-    }
     if args.split_sheets && output == "-" {
         return Err(Error::usage(
             "--split-sheets requires an output directory, not stdout",
@@ -101,15 +96,79 @@ fn convert(args: ConvertArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
     if args.add_source_column.is_some() && !args.stack {
         return Err(Error::usage("--add-source-column requires --stack"));
     }
-
-    if !args.split_sheets && output != "-" {
-        SafeWriter::ensure_writable(Path::new(&output), args.write.force)?;
+    if args.split_sheets
+        && let Some(format) = formats::detect_path(Path::new(&output))
+        && is_workbook_output(format)
+    {
+        return Err(Error::usage(
+            "--split-sheets writes delimited files; it cannot write a workbook",
+        ));
     }
 
-    let (mut tables, input_format) = load_tables(&args.input, &args.read)?;
+    let requested_format = if args.split_sheets || output == "-" {
+        None
+    } else {
+        Some(detect_supported_output(&output)?)
+    };
+
+    if let Some(format) = requested_format {
+        if is_workbook_output(format) {
+            return convert_workbook(&inputs, &output, format, &args, &diagnostics);
+        }
+
+        if inputs.len() > 1 {
+            return Err(Error::usage(
+                "multiple inputs require a workbook output (.xlsx or .ods); merge/concat arrives in Phase 5",
+            ));
+        }
+        if args.sheet_per_input || args.sheet_name_template.is_some() || args.sheet_name.is_some() {
+            return Err(Error::usage(
+                "--sheet-per-input, --sheet-name-template, and --sheet-name require a workbook output",
+            ));
+        }
+        if args.read.sheets.all_sheets && !args.split_sheets && !args.stack {
+            return Err(Error::usage(
+                "--all-sheets requires --split-sheets, --stack, or a workbook output",
+            ));
+        }
+
+        return convert_delimited(&inputs[0], &output, Some(format), &args, &diagnostics);
+    }
+
+    if inputs.len() > 1 {
+        return Err(Error::usage(
+            "multiple inputs require a workbook output (.xlsx or .ods); merge/concat arrives in Phase 5",
+        ));
+    }
+    if args.sheet_per_input || args.sheet_name_template.is_some() || args.sheet_name.is_some() {
+        return Err(Error::usage(
+            "--sheet-per-input, --sheet-name-template, and --sheet-name require a workbook output",
+        ));
+    }
+    if args.read.sheets.all_sheets && !args.split_sheets && !args.stack {
+        return Err(Error::usage(
+            "--all-sheets requires --split-sheets, --stack, or a workbook output",
+        ));
+    }
+
+    convert_delimited(&inputs[0], &output, None, &args, &diagnostics)
+}
+
+fn convert_delimited(
+    input: &str,
+    output: &str,
+    requested_format: Option<FormatId>,
+    args: &ConvertArgs,
+    diagnostics: &DiagnosticsPolicy,
+) -> Result<()> {
+    if !args.split_sheets && output != "-" {
+        SafeWriter::ensure_writable(Path::new(output), args.write.force)?;
+    }
+
+    let (mut tables, input_format) = load_tables(input, &args.read)?;
 
     if args.split_sheets {
-        return write_split(&mut tables, Path::new(&output), &args, &diagnostics);
+        return write_split(&mut tables, Path::new(output), args, input, diagnostics);
     }
 
     let table = if args.stack {
@@ -120,11 +179,11 @@ fn convert(args: ConvertArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
     } else {
         tables.into_single()?
     };
-    let output_format = output_format(input_format, &output)?;
+    let output_format = delimited_output_format(input_format, output, requested_format)?;
     let include_fidelity = diagnostics.fidelity_report || is_workbook_output(output_format);
     print_warnings(
         &table,
-        &diagnostics,
+        diagnostics,
         DiagnosticsScope::Write,
         include_fidelity,
     );
@@ -144,9 +203,9 @@ fn convert(args: ConvertArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
         return crate::io::write_stdout(&buffer);
     }
 
-    let destination = Path::new(&output);
+    let destination = Path::new(output);
     if args.write.dry_run {
-        print_dry_run(&output, &table, output_format);
+        print_dry_run(output, &table, output_format);
         return Ok(());
     }
 
@@ -155,10 +214,164 @@ fn convert(args: ConvertArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
     writer.commit()
 }
 
+#[cfg(feature = "excel")]
+fn convert_workbook(
+    inputs: &[String],
+    output: &str,
+    format: FormatId,
+    args: &ConvertArgs,
+    diagnostics: &DiagnosticsPolicy,
+) -> Result<()> {
+    if args.split_sheets {
+        return Err(Error::usage(
+            "--split-sheets writes delimited files; it cannot write a workbook",
+        ));
+    }
+
+    SafeWriter::ensure_writable(Path::new(output), args.write.force)?;
+
+    let mut selected = Vec::new();
+    for input in inputs {
+        let (tables, _) = load_tables(input, &args.read)?;
+        selected.extend(tables.tables);
+    }
+
+    if selected.is_empty() {
+        return Err(Error::data("no tables were selected to write"));
+    }
+
+    let mut tables = if args.stack {
+        vec![stack_tables(selected, args.add_source_column.as_deref())?]
+    } else {
+        selected
+    };
+
+    name_workbook_sheets(&mut tables, args)?;
+
+    // Writing a workbook always includes source-fidelity events.
+    for table in &tables {
+        print_warnings(table, diagnostics, DiagnosticsScope::Write, true);
+    }
+
+    if args.write.dry_run {
+        eprintln!(
+            "tabmux: dry-run: would write {output} as {} with {} sheet(s)",
+            format.label(),
+            tables.len()
+        );
+        for table in &tables {
+            eprintln!(
+                "tabmux: dry-run: sheet '{}' ({} rows x {} columns)",
+                table.name,
+                table.row_count(),
+                table.width()
+            );
+        }
+        return Ok(());
+    }
+
+    let mut options = formats::WriteOptions::for_format(format);
+    options.has_header = !args.read.no_header;
+    options.line_ending = args.write.line_ending;
+    options.null = args.write.null.clone();
+
+    let mut writer = SafeWriter::create(Path::new(output), args.write.force, args.write.backup)?;
+    formats::write_tables(writer.file_mut(), &tables, format, &options)?;
+    writer.commit()
+}
+
+#[cfg(not(feature = "excel"))]
+fn convert_workbook(
+    _inputs: &[String],
+    _output: &str,
+    _format: FormatId,
+    _args: &ConvertArgs,
+    _diagnostics: &DiagnosticsPolicy,
+) -> Result<()> {
+    Err(Error::unsupported(
+        "workbook writing is not compiled in (enable the excel feature)",
+    ))
+}
+
+/// Apply `--sheet-name`/`--sheet-name-template`, then sanitise and deduplicate
+/// every worksheet name. Naming events are attached to the affected table so
+/// they are visible in normal write diagnostics.
+#[cfg(feature = "excel")]
+fn name_workbook_sheets(tables: &mut [Table], args: &ConvertArgs) -> Result<()> {
+    if let Some(name) = &args.sheet_name {
+        if tables.len() != 1 {
+            return Err(Error::usage(format!(
+                "--sheet-name requires exactly one output sheet, but {} were selected",
+                tables.len()
+            )));
+        }
+        tables[0].name = name.clone();
+    } else if let Some(template) = &args.sheet_name_template {
+        for (index, table) in tables.iter_mut().enumerate() {
+            let source = table.source.path.to_string_lossy();
+            let stem = input_stem(&source);
+            table.name = render_sheet_name_template(template, &stem, &table.name, index + 1)?;
+        }
+    }
+
+    let mut used = HashSet::<String>::new();
+    for table in tables.iter_mut() {
+        let original = table.name.clone();
+        let sanitized = formats::workbook_write::sanitize_sheet_name(&original);
+        let final_name = formats::workbook_write::unique_sheet_name(&sanitized, &mut used);
+        if final_name != original {
+            let message = if final_name == sanitized {
+                format!(
+                    "sheet name '{original}' was sanitized to '{final_name}' for workbook output"
+                )
+            } else {
+                format!(
+                    "sheet name '{original}' collided or exceeded 31 characters; wrote '{final_name}'"
+                )
+            };
+            table.push_warning(
+                LossEvent::info("output.sheet_name_sanitized", message)
+                    .with_source(table.source.clone()),
+            );
+        }
+        table.name = final_name;
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "excel")]
+fn render_sheet_name_template(
+    template: &str,
+    stem: &str,
+    sheet: &str,
+    index: usize,
+) -> Result<String> {
+    let rendered = template
+        .replace("{stem}", stem)
+        .replace("{sheet}", sheet)
+        .replace("{name}", sheet)
+        .replace("{index}", &index.to_string());
+
+    if rendered.contains('{') || rendered.contains('}') {
+        return Err(Error::usage(format!(
+            "unknown placeholder in --sheet-name-template '{template}' (supported: {{stem}}, {{sheet}}, {{name}}, {{index}})"
+        )));
+    }
+    if rendered.trim().is_empty() {
+        return Err(Error::usage(
+            "--sheet-name-template produced an empty sheet name",
+        ));
+    }
+
+    Ok(rendered)
+}
+
 fn write_split(
     tables: &mut TableSet,
     output: &Path,
     args: &ConvertArgs,
+    input: &str,
     diagnostics: &DiagnosticsPolicy,
 ) -> Result<()> {
     if tables.tables.is_empty() {
@@ -170,7 +383,7 @@ fn write_split(
         .as_deref()
         .unwrap_or("{stem}.{sheet}.{format}");
     let format = split_output_format(template)?;
-    let stem = input_stem(&args.input);
+    let stem = input_stem(input);
     let mut used = HashSet::<String>::new();
     let mut plans = Vec::with_capacity(tables.tables.len());
 
@@ -747,7 +960,39 @@ fn sniff_content(bytes: &[u8]) -> Result<FormatId> {
     )
 }
 
-fn output_format(input_format: FormatId, output: &str) -> Result<FormatId> {
+fn detect_supported_output(output: &str) -> Result<FormatId> {
+    let extension = Path::new(output)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    match extension.as_str() {
+        "csv" => Ok(FormatId::Csv),
+        "tsv" | "tab" => Ok(FormatId::Tsv),
+        "xlsx" => Ok(FormatId::Xlsx),
+        "ods" => Ok(FormatId::Ods),
+        "json" | "jsonl" | "ndjson" | "html" | "htm" => Err(Error::unsupported(format!(
+            "writing {extension} is not implemented yet"
+        ))),
+        "xls" | "xlsb" | "xlsm" => Err(Error::unsupported(
+            "writing legacy or macro-enabled Excel containers is not supported; use .xlsx",
+        )),
+        _ => Err(Error::unsupported(format!(
+            "cannot detect output format for '{output}' (supported outputs: csv, tsv, xlsx, ods)"
+        ))),
+    }
+}
+
+fn delimited_output_format(
+    input_format: FormatId,
+    output: &str,
+    requested_format: Option<FormatId>,
+) -> Result<FormatId> {
+    if let Some(format) = requested_format {
+        return Ok(format);
+    }
+
     if output == "-" {
         return Ok(match input_format {
             FormatId::Csv | FormatId::Tsv => input_format,
@@ -755,20 +1000,9 @@ fn output_format(input_format: FormatId, output: &str) -> Result<FormatId> {
         });
     }
 
-    let format = formats::detect_path(Path::new(output)).ok_or_else(|| {
-        Error::unsupported(format!(
-            "cannot detect output format for '{output}' (supported outputs: csv, tsv)"
-        ))
-    })?;
-
-    if matches!(format, FormatId::Csv | FormatId::Tsv) {
-        Ok(format)
-    } else {
-        Err(Error::unsupported(format!(
-            "writing {} is not implemented yet",
-            format.label()
-        )))
-    }
+    Err(Error::unsupported(format!(
+        "cannot detect output format for '{output}' (supported outputs: csv, tsv, xlsx, ods)"
+    )))
 }
 
 fn write_stdout_table(table: &Table, has_header: bool, pretty: bool) -> Result<()> {
@@ -1032,20 +1266,27 @@ fn print_dry_run(destination: &str, table: &Table, format: FormatId) {
     );
 }
 
-fn reject_self_overwrite(input: &str, output: &str) -> Result<()> {
-    if input == "-" || output == "-" {
+fn reject_self_overwrite(inputs: &[String], output: &str) -> Result<()> {
+    if output == "-" {
         return Ok(());
     }
 
-    let input = std::fs::canonicalize(input).ok();
-    let output = std::fs::canonicalize(output).ok();
-    if let (Some(input), Some(output)) = (input, output)
-        && input == output
-    {
-        return Err(Error::usage(format!(
-            "input and output are the same file: {}",
-            input.display()
-        )));
+    let Some(output) = std::fs::canonicalize(output).ok() else {
+        return Ok(());
+    };
+
+    for input in inputs {
+        if input == "-" {
+            continue;
+        }
+        if let Some(input) = std::fs::canonicalize(input).ok()
+            && input == output
+        {
+            return Err(Error::usage(format!(
+                "input and output are the same file: {}",
+                input.display()
+            )));
+        }
     }
     Ok(())
 }

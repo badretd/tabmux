@@ -7,9 +7,12 @@ license = "MIT OR Apache-2.0"
 description = "Safe, reproducible conversion of messy tabular sources into clean tables and workbooks"
 
 [features]
-default = ["core", "excel"]
+default = ["core", "excel", "rust_xlsxwriter"]
 core = ["dep:clap", "dep:csv", "dep:encoding_rs", "dep:serde_json", "dep:tempfile", "dep:thiserror", "dep:chrono"]
 excel = ["dep:calamine", "dep:zip", "dep:quick-xml"]
+# Library-backed XLSX writer used by the default build. A build with only
+# `excel` enabled keeps the built-in manual writer as a fallback.
+rust_xlsxwriter = ["excel", "dep:rust_xlsxwriter"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
@@ -27,6 +30,7 @@ zip = { version = "9.1", default-features = false, features = ["deflate"], optio
 # Used only to inspect ODS packages for merged-cell spans, which calamine does
 # not expose for the ODS reader.
 quick-xml = { version = "0.42", optional = true }
+rust_xlsxwriter = { version = "0.102", features = ["chrono", "zlib", "constant_memory", "rust_decimal"], optional = true }
 
 [profile.release]
 opt-level = 3

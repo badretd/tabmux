@@ -1122,3 +1122,410 @@ fn quiet_and_none_suppress_diagnostics() {
         assert_eq!(stderr(&output), "", "{flag} did not suppress diagnostics");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4: XLSX/ODS write, multi-sheet assembly, basic formatting
+// ---------------------------------------------------------------------------
+
+use tabmux::formats::{self, FormatId, ReadOptions, SheetSelection};
+use tabmux::model::{CellValue, SourceRef};
+
+fn read_workbook(path: &Path, format: FormatId) -> Vec<tabmux::model::Table> {
+    let bytes = fs::read(path).unwrap();
+    let source = SourceRef::new(path, format);
+    let options = ReadOptions {
+        has_header: true,
+        sheets: SheetSelection::All,
+        ..ReadOptions::default()
+    };
+    formats::read_tables(&source, &bytes, format, &options)
+        .unwrap()
+        .tables
+}
+
+#[test]
+fn multi_input_csv_builds_a_workbook_with_native_types() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("report.xlsx");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let sheets = tabmux().arg("sheets").arg(&destination).output().unwrap();
+    assert_success(&sheets);
+    assert_eq!(String::from_utf8(sheets.stdout).unwrap(), "a\nb\n");
+
+    let tables = read_workbook(&destination, FormatId::Xlsx);
+    assert_eq!(tables.len(), 2);
+    assert_eq!(tables[0].name, "a");
+    assert_eq!(tables[1].name, "b");
+    assert_eq!(tables[0].rows[0][0], CellValue::Int(1));
+    assert_eq!(tables[0].rows[0][1], CellValue::Text("Alice".into()));
+    assert_eq!(tables[0].rows[0][2], CellValue::Float(120.5));
+    assert_eq!(tables[0].rows[0][3], CellValue::Bool(true));
+    assert!(matches!(tables[0].rows[0][4], CellValue::Date(_)));
+    assert_eq!(tables[1].rows[0][0], CellValue::Int(4));
+}
+
+#[test]
+fn multi_input_csv_builds_an_ods_workbook() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("report.ods");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let tables = read_workbook(&destination, FormatId::Ods);
+    assert_eq!(tables.len(), 2);
+    assert_eq!(tables[0].name, "a");
+    assert_eq!(tables[0].rows[0][0], CellValue::Int(1));
+    assert_eq!(tables[0].rows[0][2], CellValue::Float(120.5));
+    assert_eq!(tables[0].rows[0][3], CellValue::Bool(true));
+    assert!(matches!(tables[0].rows[0][4], CellValue::Date(_)));
+}
+
+#[test]
+fn typed_csv_keeps_native_types_in_both_workbook_formats() {
+    for (extension, format) in [("xlsx", FormatId::Xlsx), ("ods", FormatId::Ods)] {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join(format!("typed.{extension}"));
+
+        let output = tabmux()
+            .arg("convert")
+            .arg(fixture("typed.csv"))
+            .arg("-o")
+            .arg(&destination)
+            .arg("--sheet-name")
+            .arg("Types")
+            .output()
+            .unwrap();
+        assert_success(&output);
+
+        let tables = read_workbook(&destination, format);
+        assert_eq!(tables.len(), 1);
+        let table = &tables[0];
+        assert_eq!(table.name, "Types");
+        assert_eq!(table.rows[0][0], CellValue::Int(1));
+        assert_eq!(table.rows[0][1], CellValue::Float(1.5));
+        assert_eq!(table.rows[0][2], CellValue::Bool(true));
+        assert!(matches!(table.rows[0][3], CellValue::Date(_)));
+        assert!(matches!(table.rows[0][4], CellValue::DateTime(_)));
+        assert!(matches!(table.rows[0][5], CellValue::Time(_)));
+        // A leading zero must keep the column textual.
+        assert_eq!(table.rows[0][6], CellValue::Text("007".into()));
+        assert_eq!(table.columns[6].ty, tabmux::model::ColumnType::Text);
+    }
+}
+
+#[test]
+fn null_values_round_trip_in_workbook_formats() {
+    for (extension, format) in [("xlsx", FormatId::Xlsx), ("ods", FormatId::Ods)] {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join(format!("nulls.{extension}"));
+
+        let output = tabmux()
+            .arg("convert")
+            .arg(fixture("nulls.csv"))
+            .arg("-o")
+            .arg(&destination)
+            .output()
+            .unwrap();
+        assert_success(&output);
+
+        let tables = read_workbook(&destination, format);
+        assert_eq!(tables[0].rows[0][1], CellValue::Text("Alice".into()));
+        assert_eq!(tables[0].rows[1][1], CellValue::Null);
+        assert_eq!(tables[0].rows[1][2], CellValue::Null);
+        assert_eq!(tables[0].rows[1][3], CellValue::Null);
+        assert_eq!(tables[0].rows[1][4], CellValue::Null);
+    }
+}
+
+#[test]
+fn multiline_cells_round_trip_through_ods() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("wide.ods");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("wide.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let original = tabmux()
+        .arg("convert")
+        .arg(fixture("wide.csv"))
+        .arg("-")
+        .output()
+        .unwrap();
+    let round_trip = tabmux()
+        .arg("convert")
+        .arg(&destination)
+        .arg("-")
+        .output()
+        .unwrap();
+    assert_success(&round_trip);
+    assert_eq!(round_trip.stdout, original.stdout);
+}
+
+#[test]
+fn sheet_per_input_and_name_templates_are_stable() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let explicit = dir.path().join("explicit.xlsx");
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&explicit)
+        .arg("--sheet-per-input")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let sheets = tabmux().arg("sheets").arg(&explicit).output().unwrap();
+    assert_eq!(String::from_utf8(sheets.stdout).unwrap(), "a\nb\n");
+
+    let templated = dir.path().join("templated.xlsx");
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&templated)
+        .arg("--sheet-name-template")
+        .arg("sheet-{index}")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let sheets = tabmux().arg("sheets").arg(&templated).output().unwrap();
+    assert_eq!(
+        String::from_utf8(sheets.stdout).unwrap(),
+        "sheet-1\nsheet-2\n"
+    );
+}
+
+#[test]
+fn sheet_name_renames_and_sanitizes_the_single_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("renamed.xlsx");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .arg("--sheet-name")
+        .arg("Quarterly/Report")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(stderr(&output).contains("output.sheet_name_sanitized"));
+
+    let sheets = tabmux().arg("sheets").arg(&destination).output().unwrap();
+    assert_eq!(
+        String::from_utf8(sheets.stdout).unwrap(),
+        "Quarterly_Report\n"
+    );
+}
+
+#[test]
+fn duplicate_sheet_names_get_stable_suffixes() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("collision.xlsx");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg(fixture("a.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(stderr(&output).contains("output.sheet_name_sanitized"));
+
+    let sheets = tabmux().arg("sheets").arg(&destination).output().unwrap();
+    assert_eq!(String::from_utf8(sheets.stdout).unwrap(), "a\na-2\n");
+}
+
+#[test]
+fn all_sheets_round_trip_between_xlsx_and_ods() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let xlsx = dir.path().join("sales.xlsx");
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.ods"))
+        .arg("-o")
+        .arg(&xlsx)
+        .arg("--all-sheets")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let generated = read_workbook(&xlsx, FormatId::Xlsx);
+    let original = read_workbook(&fixture("sales.ods"), FormatId::Ods);
+    assert_eq!(generated.len(), original.len());
+    for (generated, original) in generated.iter().zip(original.iter()) {
+        assert_eq!(generated.name, original.name);
+        assert_eq!(generated.column_names(), original.column_names());
+        assert_eq!(generated.rows, original.rows);
+    }
+
+    let ods = dir.path().join("sales.ods");
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.xlsx"))
+        .arg("-o")
+        .arg(&ods)
+        .arg("--all-sheets")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let generated = read_workbook(&ods, FormatId::Ods);
+    let original = read_workbook(&fixture("sales.xlsx"), FormatId::Xlsx);
+    assert_eq!(generated.len(), original.len());
+    for (generated, original) in generated.iter().zip(original.iter()) {
+        assert_eq!(generated.name, original.name);
+        assert_eq!(generated.column_names(), original.column_names());
+        assert_eq!(generated.rows, original.rows);
+    }
+}
+
+#[test]
+fn workbook_dry_run_writes_nothing_and_lists_sheets() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("nothing.xlsx");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .arg("--dry-run")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(!destination.exists());
+    let error = stderr(&output);
+    assert!(error.contains("dry-run"));
+    assert!(error.contains("sheet 'a'"));
+    assert!(error.contains("sheet 'b'"));
+    assert!(error.contains("2 sheet(s)"));
+}
+
+#[test]
+fn workbook_output_validation_happens_before_writing() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let csv = dir.path().join("multi.csv");
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&csv)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("multiple inputs require a workbook output"));
+    assert!(!csv.exists());
+
+    let split = dir.path().join("split.xlsx");
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg("-o")
+        .arg(&split)
+        .arg("--split-sheets")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!split.exists());
+
+    let templated = dir.path().join("bad-template.xlsx");
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg("-o")
+        .arg(&templated)
+        .arg("--sheet-name-template")
+        .arg("bad-{unknown}")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("unknown placeholder"));
+    assert!(!templated.exists());
+
+    let legacy = dir.path().join("legacy.xls");
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg("-o")
+        .arg(&legacy)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert!(stderr(&output).contains("legacy"));
+    assert!(!legacy.exists());
+
+    fs::write(&templated, "sentinel").unwrap();
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg("-o")
+        .arg(&templated)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("already exists"));
+    assert_eq!(fs::read_to_string(&templated).unwrap(), "sentinel");
+}
+
+#[test]
+fn stacking_multiple_inputs_into_one_workbook_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("stacked.xlsx");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .arg("--all-sheets")
+        .arg("--stack")
+        .arg("--add-source-column")
+        .arg("origin")
+        .arg("--sheet-name")
+        .arg("Merged")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let tables = read_workbook(&destination, FormatId::Xlsx);
+    assert_eq!(tables.len(), 1);
+    assert_eq!(tables[0].name, "Merged");
+    assert_eq!(tables[0].rows.len(), 5);
+    assert_eq!(tables[0].column_names().last().copied(), Some("origin"));
+    assert_eq!(tables[0].rows[0].last(), Some(&CellValue::Text("a".into())));
+    assert_eq!(tables[0].rows[4].last(), Some(&CellValue::Text("b".into())));
+}

@@ -1,0 +1,4 @@
+id,name,amount,active,joined
+1,Alice,120.5,true,2026-01-15
+2,Bob,80,false,2026-02-01
+3,Carol,200,true,2026-03-10

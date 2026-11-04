@@ -107,6 +107,51 @@
 - **Wide fixture:** `fixtures/wide.csv` carries commas, quotes, embedded
   newlines, and a trailing newline inside a cell for exact-addressing tests.
 
+## Phase 4 — XLSX/ODS write, multi-sheet assembly, basic formatting
+
+- **Writer crates:** `rust_xlsxwriter 0.102` is part of the default build via
+  the `rust_xlsxwriter` feature. `formats/xlsx_writer.rs` is the normal XLSX
+  writer and uses the library's `Workbook`/`Worksheet` API. A build with only
+  `excel` enabled (`--no-default-features --features core,excel`) keeps the
+  built-in `formats/xlsx_manual.rs` writer as a fallback for constrained
+  environments. `spreadsheet-ods` is not used; ODS writing remains the built-in
+  ODF writer. Both XLSX paths expose the same `formats::write_tables` contract.
+- **Multi-input conversion:** `convert a.csv b.csv -o out.xlsx` writes one
+  worksheet per input. Without `-o`, the final positional argument remains the
+  output path, so the earlier `convert INPUT OUTPUT` form still works.
+  `--sheet-per-input` is the explicit spelling of this default; it does not
+  merge multiple sheets from a single workbook. Multi-input output is limited to
+  workbooks until merge/concat lands in Phase 5.
+- **Worksheet naming:** the default name is the source stem (CSV) or the source
+  sheet name (workbook). `--sheet-name-template` supports `{stem}`, `{sheet}`,
+  `{name}`, and `{index}`. `--sheet-name` (alias `--output-sheet`) renames a
+  single output sheet. `--sheet` itself remains the *input* sheet selector.
+- **Sheet-name rules:** names are sanitized for Excel (`[]:*?/\`, control
+  characters, 31-character limit), trimmed, and deduplicated case-insensitively
+  with stable `-2`, `-3`, ... suffixes. Every change emits
+  `output.sheet_name_sanitized` when writing the workbook.
+- **Native types:** CSV/TSV sources are all text so CSV/TSV output stays
+  byte-faithful. Type inference runs only for workbook output. Integers, floats,
+  booleans, ISO dates, ISO datetimes, and times become native values; leading
+  zeroes (`007`) and mixed columns stay text; empty fields become null cells.
+  Empty columns become `null`. `Decimal` values are written as text to preserve
+  exact digits.
+- **XLSX formatting:** bold header, frozen top row, autofilter on the used
+  range, readable column widths, and date/datetime/time number formats. Time
+  cells use the `[h]:mm:ss` format so readers classify them as times rather
+  than datetimes.
+- **ODS formatting:** bold header, readable column widths, and native cell
+  types. Freeze panes and autofilter are XLSX-only in this phase; ODF view
+  settings and database ranges are not generated. This is basic formatting, not
+  style preservation.
+- **Nulls and control characters:** null cells are written as empty cells.
+  Text containing XML-invalid control characters is rejected with a hard error
+  that includes the sheet and cell context rather than being silently dropped.
+- **Split output:** `--split-sheets` remains delimited-only; passing a `.xlsx`
+  or `.ods` destination with `--split-sheets` is a usage error. Multi-file
+  stage-then-commit atomicity is still a Phase 9 hardening item; workbook output
+  itself is a single atomic `SafeWriter` commit.
+
 ## Diagnostics policy
 
 - **Default (`summary`):** read-only commands show only warnings/errors that

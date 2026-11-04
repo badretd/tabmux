@@ -268,4 +268,73 @@ quiet_err="$("$BIN" select fixtures/ragged.csv --ragged pad --columns name --qui
 [[ -z "$quiet_err" ]] || fail "--quiet still printed diagnostics: $quiet_err"
 echo "summary/fidelity/debug/quiet: ok"
 
+section "Phase 4: XLSX/ODS write, multi-sheet assembly, basic formatting"
+
+"$BIN" convert fixtures/a.csv fixtures/b.csv -o "$TMP_DIR/report.xlsx"
+report_sheets="$("$BIN" sheets "$TMP_DIR/report.xlsx")"
+[[ "$report_sheets" == $'a\nb' ]] \
+  || fail "multi-input XLSX sheets were '$report_sheets'"
+"$BIN" convert "$TMP_DIR/report.xlsx" - --sheet a >"$TMP_DIR/report-a.csv"
+grep -q '^id,name,amount,active,joined$' "$TMP_DIR/report-a.csv" \
+  || fail "round-tripped XLSX sheet has the wrong header"
+grep -q '^1,Alice,120.5,true,2026-01-15$' "$TMP_DIR/report-a.csv" \
+  || fail "round-tripped XLSX values or types changed"
+echo "multi-input XLSX: ok"
+
+"$BIN" convert fixtures/a.csv fixtures/b.csv -o "$TMP_DIR/report.ods"
+ods_report_sheets="$("$BIN" sheets "$TMP_DIR/report.ods")"
+[[ "$ods_report_sheets" == $'a\nb' ]] \
+  || fail "multi-input ODS sheets were '$ods_report_sheets'"
+"$BIN" convert "$TMP_DIR/report.ods" - --sheet b >"$TMP_DIR/report-b.csv"
+grep -q '^4,Dave,42.25,false,2026-04-02$' "$TMP_DIR/report-b.csv" \
+  || fail "round-tripped ODS values changed"
+echo "multi-input ODS: ok"
+
+"$BIN" convert fixtures/typed.csv -o "$TMP_DIR/typed.xlsx" --sheet-name Types
+"$BIN" convert "$TMP_DIR/typed.xlsx" - --sheet Types >"$TMP_DIR/typed.csv"
+grep -q '^1,1.5,true,2026-01-15,2026-01-15T10:30:00,10:30:00,007$' "$TMP_DIR/typed.csv" \
+  || fail "native types were not preserved in XLSX"
+echo "native workbook types: ok"
+
+"$BIN" convert fixtures/sales.ods -o "$TMP_DIR/sales-roundtrip.xlsx" --all-sheets \
+  >/dev/null 2>&1
+roundtrip_sheets="$("$BIN" sheets "$TMP_DIR/sales-roundtrip.xlsx")"
+[[ "$roundtrip_sheets" == $'Sales\nRegions' ]] \
+  || fail "ODS -> XLSX all-sheets produced '$roundtrip_sheets'"
+grep -q 'Total,Total,,400.5,,' <("$BIN" convert "$TMP_DIR/sales-roundtrip.xlsx" - --sheet Sales) \
+  || fail "ODS -> XLSX round-trip lost merged or cached values"
+echo "workbook -> workbook round-trip: ok"
+
+"$BIN" convert fixtures/a.csv fixtures/b.csv -o "$TMP_DIR/templated.xlsx" \
+  --sheet-name-template 'sheet-{index}'
+templated_sheets="$("$BIN" sheets "$TMP_DIR/templated.xlsx")"
+[[ "$templated_sheets" == $'sheet-1\nsheet-2' ]] \
+  || fail "sheet-name-template produced '$templated_sheets'"
+
+"$BIN" convert fixtures/a.csv fixtures/a.csv -o "$TMP_DIR/collision.xlsx" \
+  2>"$TMP_DIR/collision.err"
+collision_sheets="$("$BIN" sheets "$TMP_DIR/collision.xlsx")"
+[[ "$collision_sheets" == $'a\na-2' ]] \
+  || fail "sheet-name collisions produced '$collision_sheets'"
+grep -q 'output.sheet_name_sanitized' "$TMP_DIR/collision.err" \
+  || fail "sheet-name collision was not reported"
+echo "sheet naming: ok"
+
+"$BIN" convert fixtures/a.csv -o "$TMP_DIR/dry.xlsx" --dry-run \
+  >/dev/null 2>"$TMP_DIR/dry-workbook.err"
+[[ ! -e "$TMP_DIR/dry.xlsx" ]] || fail "--dry-run wrote a workbook"
+grep -q 'dry-run' "$TMP_DIR/dry-workbook.err" \
+  || fail "workbook --dry-run printed no plan"
+echo "workbook dry-run: ok"
+
+set +e
+"$BIN" convert fixtures/a.csv fixtures/b.csv -o "$TMP_DIR/multi.csv" \
+  >/dev/null 2>"$TMP_DIR/multi.err"
+multi_status=$?
+set -e
+[[ "$multi_status" -eq 2 ]] \
+  || fail "multi-input delimited output exited $multi_status, expected 2"
+[[ ! -e "$TMP_DIR/multi.csv" ]] || fail "validation failure wrote an output"
+echo "workbook output validation: ok"
+
 printf '\nsmoke: all checks passed\n'

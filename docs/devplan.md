@@ -592,16 +592,21 @@ Expected:
 
 **Single-pass scope**
 
-- Add `rust_xlsxwriter` and `spreadsheet-ods` writers.
+- Add `rust_xlsxwriter` (default build) and `spreadsheet-ods` writers. The ODS
+  writer is currently the built-in ODF implementation until `spreadsheet-ods`
+  is adopted.
 - `convert a.csv b.csv -o out.xlsx` → one sheet per input (default).
 - `--sheet-per-input` explicit; `--sheet-name-template '{stem}'`.
-- `--sheet NAME` to name a single output sheet.
+- `--sheet-name NAME` (alias `--output-sheet`) to name a single output sheet.
+  `--sheet` remains the input-sheet selector used by the earlier phases.
 - Basic formatting only:
   - header bold + freeze top row;
   - autofilter on the used range;
   - sensible column widths;
   - number/date formats for typed columns;
   - no style cloning, charts, conditional formatting, pivots, macros.
+  - ODS output carries bold headers, native types, and column widths; freeze
+    panes and autofilter are XLSX-only in this phase.
 - Write values as native types where safe (int, float, bool, date, datetime); otherwise text.
 - Re-read the generated workbook with calamine in tests and compare values to the source.
 

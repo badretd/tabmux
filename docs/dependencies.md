@@ -191,6 +191,15 @@ Versions were checked against crates.io on **2026-11-04**. Use caret requirement
 - **Formula evaluation:** do not promise full Excel compatibility. Read cached values by default; use `formula` for a documented subset; offer an optional LibreOffice bridge for recalculation.
 - **Date handling:** use `jiff` for new timezone-aware code, `chrono` where crates require it (calamine, duckdb, rust_xlsxwriter).
 
+**Build note (Phase 4)**
+
+`rust_xlsxwriter 0.102` is part of the default build: the `default` feature set
+includes `rust_xlsxwriter`, and `formats/xlsx_writer.rs` uses the library. The
+built-in `formats/xlsx_manual.rs` writer remains available when the crate is
+intentionally disabled with `--no-default-features --features core,excel`.
+`spreadsheet-ods` is not used; ODS writing remains the built-in ODF writer. Both
+XLSX paths expose the same CLI and table-model contract.
+
 ### 3.5 Structured documents: JSON, YAML, XML, HTML, Markdown, DOCX, email
 
 > **v1:** `serde_json`, `toml` (config/pipeline), `scraper`, `html-escape`. **CUT:** YAML table I/O, XML/XPath, jq/JSONPath, Markdown/RST/LaTeX output, DOCX/EML/PDF ingestion (deferred). **DEFERRED:** `minijinja` is used only for internal naming, not user templates in v1.

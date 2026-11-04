@@ -150,16 +150,13 @@ impl DisplayArgs {
     }
 }
 
-/// Convert one input to one output.
+/// Convert one or more inputs to one output.
 #[derive(Debug, Clone, Args)]
 pub struct ConvertArgs {
-    /// Input path, or - for stdin.
-    #[arg(value_name = "INPUT")]
-    pub input: String,
-
-    /// Output path, or - for stdout. May also be supplied with -o.
-    #[arg(value_name = "OUTPUT")]
-    pub positional_output: Option<String>,
+    /// Input path(s). Use - for stdin. With -o, every positional is an input;
+    /// without -o, the final positional is the output path.
+    #[arg(value_name = "INPUT", required = true, num_args = 1..)]
+    pub inputs: Vec<String>,
 
     /// Output path, or - for stdout.
     #[arg(short = 'o', long = "output", value_name = "PATH")]
@@ -187,19 +184,49 @@ pub struct ConvertArgs {
     /// Add a provenance column with the source sheet name when stacking.
     #[arg(long, value_name = "NAME", requires = "stack")]
     pub add_source_column: Option<String>,
+
+    /// Explicitly assemble one worksheet per input file (the default for
+    /// multi-input workbook output).
+    #[arg(long)]
+    pub sheet_per_input: bool,
+
+    /// Worksheet-name template for workbook output. Supports {stem}, {sheet},
+    /// {name}, and {index}.
+    #[arg(long, value_name = "TEMPLATE", conflicts_with = "sheet_name")]
+    pub sheet_name_template: Option<String>,
+
+    /// Name the single output worksheet.
+    #[arg(
+        long = "sheet-name",
+        visible_alias = "output-sheet",
+        value_name = "NAME",
+        conflicts_with = "sheet_name_template"
+    )]
+    pub sheet_name: Option<String>,
 }
 
 impl ConvertArgs {
-    pub fn resolve_output(&self) -> Result<&str> {
-        match (&self.positional_output, &self.output) {
-            (Some(_), Some(_)) => Err(Error::usage(
-                "output was given both positionally and with --output",
-            )),
-            (Some(output), None) | (None, Some(output)) => Ok(output),
-            (None, None) => Err(Error::usage(
-                "missing output path (pass it positionally or with -o/--output)",
-            )),
+    /// Resolve the input list and output path.
+    ///
+    /// With `-o`, all positionals are inputs. Without `-o`, the last positional
+    /// is the output so the Phase 0/1 `convert INPUT OUTPUT` form keeps working.
+    pub fn resolve(&self) -> Result<(Vec<String>, String)> {
+        if let Some(output) = &self.output {
+            if self.inputs.is_empty() {
+                return Err(Error::usage("missing input path"));
+            }
+            return Ok((self.inputs.clone(), output.clone()));
         }
+
+        if self.inputs.len() < 2 {
+            return Err(Error::usage(
+                "missing output path (pass it positionally or with -o/--output)",
+            ));
+        }
+
+        let output = self.inputs.last().cloned().unwrap();
+        let inputs = self.inputs[..self.inputs.len() - 1].to_vec();
+        Ok((inputs, output))
     }
 }
 

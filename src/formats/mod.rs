@@ -5,7 +5,7 @@
 //! reader/writer, a loss policy, and checked-in fixtures.
 
 use std::fmt::Write as _;
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::path::Path;
 
 use crate::error::{Error, Result};
@@ -18,7 +18,13 @@ pub mod ods;
 #[cfg(feature = "excel")]
 pub mod workbook;
 #[cfg(feature = "excel")]
+pub mod workbook_write;
+#[cfg(feature = "excel")]
 pub mod xlsx;
+#[cfg(all(feature = "excel", not(feature = "rust_xlsxwriter")))]
+pub mod xlsx_manual;
+#[cfg(all(feature = "excel", feature = "rust_xlsxwriter"))]
+pub mod xlsx_writer;
 
 /// Stable identifier for a supported input/output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -392,6 +398,46 @@ pub fn write_table<W: Write>(
             null: options.null.clone(),
         },
     )
+}
+
+/// Write one or more tables to a multi-table output.
+///
+/// Delimited formats hold exactly one table; workbooks hold one sheet per table.
+pub fn write_tables<W: Write + Seek>(
+    output: W,
+    tables: &[Table],
+    format: FormatId,
+    options: &WriteOptions,
+) -> Result<()> {
+    if tables.is_empty() {
+        return Err(Error::data("no tables to write"));
+    }
+
+    match format {
+        FormatId::Csv | FormatId::Tsv => {
+            if tables.len() > 1 {
+                return Err(Error::data(format!(
+                    "{} output holds one table but {} were selected",
+                    format.label(),
+                    tables.len()
+                )));
+            }
+            write_table(output, &tables[0], format, options)
+        }
+        #[cfg(feature = "excel")]
+        FormatId::Xlsx => xlsx::write(output, tables, options),
+        #[cfg(feature = "excel")]
+        FormatId::Ods => ods::write(output, tables, options),
+        #[cfg(not(feature = "excel"))]
+        FormatId::Xlsx | FormatId::Ods => Err(Error::unsupported(format!(
+            "{} support is not compiled in (enable the excel feature)",
+            format.label()
+        ))),
+        FormatId::Html | FormatId::Json => Err(Error::unsupported(format!(
+            "writing {} is not implemented yet",
+            format.label()
+        ))),
+    }
 }
 
 #[cfg(test)]
