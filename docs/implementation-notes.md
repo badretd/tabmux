@@ -5,9 +5,9 @@
 
 ## Phase 0 — CLI skeleton
 
-- `clap` is pinned to `4.5.60` because the build environment resolved crates
-  offline. The CLI surface is the same as the planned 4.6 line; the pin can be
-  relaxed when the workspace has network access.
+- `clap` was originally pinned to `4.5.60` because the build environment
+  resolved crates offline. Phase 12 moved to `4.6.6` (with `anstream` 1.0) to
+  fix the Windows `anstyle-wincon` conflicting-impl build failure.
 - CI lives in `.github/workflows/ci.yml` and runs fmt, clippy, tests, and the
   smoke script on Linux.
 
@@ -37,10 +37,11 @@
 
 ## Phase 2 — XLSX read, sheet selection, CSV conversion
 
-- **Calamine version:** the offline registry has `calamine 0.37.0`, not the
-  planned `0.38`. The APIs used here (`workbook_auto_from_rs`,
-  `worksheet_range`, `worksheet_formula`, `merge_cells_by_sheet_name`) are
-  stable across both lines.
+- **Calamine version:** Phase 2 started on `calamine 0.37.0`, the version
+  available offline at the time. Phase 12 moved to `0.38.0`, which contains
+  the CFB/OLE2 hardening fix for RUSTSEC-2026-0436. The APIs used here
+  (`workbook_auto_from_rs`, `worksheet_range`, `worksheet_formula`,
+  `merge_cells_by_sheet_name`) are stable across both lines.
 - **Legacy containers:** `.xls`, `.xlsb`, and `.xlsm` extensions are routed
   through the `xlsx` capability row because the registry describes conversion
   formats, not container generations. `calamine` auto-detects the actual
@@ -78,7 +79,7 @@
 
 - **Shared workbook reader:** XLSX and ODS now share `formats/workbook.rs`.
   `formats/xlsx.rs` and `formats/ods.rs` are thin format-specific entry points.
-- **ODS merged cells:** `calamine 0.37` does not expose merged ranges for ODS.
+- **ODS merged cells:** `calamine 0.38` does not expose merged ranges for ODS.
   The reader inspects `content.xml` with `quick-xml` and expands
   `number-columns-spanned` / `number-rows-spanned` ranges itself. ODS formulas
   still use the cached value and emit `excel.formula_cached_value_only`. ODS
@@ -506,6 +507,46 @@
   (`core`, `core,excel`, `core,html`, `core,sql-duckdb`, `default`, `full`),
   `cargo deny`, and `cargo audit`. `deny.toml` allows only permissive licenses
   and rejects wildcard dependencies and unknown sources.
+
+## Phase 12 — Release packaging and documentation
+
+- **License:** the crate is dual-licensed `MIT OR Apache-2.0`. The full
+  `LICENSE-MIT` and `LICENSE-APACHE` texts and a `NOTICE` file are checked in
+  and included in every release archive. `Cargo.toml` carries `readme`,
+  `repository`, `homepage`, `documentation`, `keywords`, and `categories`.
+- **Version string:** `build.rs` embeds the short git hash and the enabled
+  Cargo features, so `tabmux --version` prints
+  `tabmux 0.1.0 (commit <hash>; features core,excel,html,rust_xlsxwriter)`.
+  Outside a git checkout the commit is `unknown`. The provenance manifest keeps
+  the plain package version for schema stability.
+- **Release script:** `scripts/build-release.sh` runs formatting, clippy, and
+  all-feature tests (unless skipped), builds with `--locked`, enforces a binary
+  size budget, runs the release-binary smoke suite, packages the binary, docs,
+  licenses, and release notes, generates a CycloneDX 1.5 SBOM via
+  `scripts/make-sbom.py`, and writes a `.tar.gz` plus `SHA256SUMS` under
+  `dist/`.
+- **Automated release:** `.github/workflows/release.yml` verifies that a `v*`
+  tag matches `Cargo.toml`, runs the full quality gate, builds Linux/macOS/
+  Windows archives, regenerates the SBOM/checksums, and publishes a GitHub
+  release. It uses the same script as the manual path rather than a separate
+  release engine, so the two paths cannot drift.
+- **Independent release instructions:** `docs/release.md` covers preconditions,
+  local verification, artifact checks, third-party verification, tag/publish
+  steps, rollback, and the license policy.
+- **Optional LibreOffice bridge:** LibreOffice is not bundled and is not a
+  build or runtime dependency. It is only an optional external viewer for
+  generated XLSX/ODS files; `tabmux` itself validates workbooks by re-reading
+  them with calamine.
+- **Dependency/security fixes:** `clap` is now 4.6.6 (anstream 1.0), which
+  fixes the Windows `anstyle-wincon` conflicting-impl build failure.
+  `calamine` is now 0.38.0, which contains the CFB/OLE2 parser hardening fix
+  for RUSTSEC-2026-0436. `deny.toml` was corrected for the current cargo-deny
+  schema, and CI grants `checks: write` so `cargo audit` can publish its check
+  run.
+- **Feature-aware tests:** HTML-dependent hardening tests are gated on the
+  `html` feature, and the batch report test expects three outputs when `html`
+  is disabled. This keeps `cargo test --no-default-features --features
+  core,excel` green.
 
 ## Diagnostics policy
 

@@ -1,6 +1,6 @@
 # tabmux development plan
 
-> **Status:** active plan, 2026-11-04  
+> **Status:** implemented through Phase 12 (v0.1.0), 2026-11-04  
 > **Scope:** v1 conversion core only. The product is now a safe, reproducible, honest **table/workbook conversion engine**, not a general analytics platform.  
 > **Companion documents:** [`features.md`](./features.md) (feature space and scope decisions), [`analogues.md`](./analogues.md) (research), [`dependencies.md`](./dependencies.md) (crate plan).
 
@@ -1354,6 +1354,28 @@ Expected:
 - `v0.1.0` tag exists with checksums/SBOM.
 - Release notes list scope, non-goals, and known fidelity limits.
 - No stale documentation references a discontinued feature as planned.
+
+**Implementation note (2026-11-04)**
+
+- **Packaging:** `scripts/build-release.sh` performs the local release build
+  with `--locked`, a 50 MiB binary-size budget, the release-binary smoke suite,
+  artifact assembly, CycloneDX SBOM generation, `.tar.gz` creation, and
+  `SHA256SUMS`. Artifacts land in `dist/`.
+- **SBOM:** `scripts/make-sbom.py` emits CycloneDX 1.5 from the committed
+  `Cargo.lock`, with a package URL and SHA-256 checksum for every locked crate.
+- **Version:** `--version` now includes the git commit and enabled features,
+  for example `tabmux 0.1.0 (commit 72fa4a0; features
+  core,excel,html,rust_xlsxwriter)`.
+- **Automation:** `.github/workflows/release.yml` verifies the tag against
+  `Cargo.toml`, runs the quality gate, builds Linux/macOS/Windows archives,
+  regenerates checksums, and publishes the GitHub release. The same script
+  backs the manual path. `cargo-dist` is not used, so no separate release
+  engine can drift from the documented script.
+- **Docs and license:** root `README.md`, `RELEASE_NOTES.md`, `docs/release.md`,
+  `LICENSE-MIT`, `LICENSE-APACHE`, and `NOTICE` are checked in; the crate is
+  dual-licensed `MIT OR Apache-2.0`.
+- **Security maintenance:** `calamine` is 0.38 (RUSTSEC-2026-0436 fix) and
+  `clap` is 4.6.6 (Windows `anstream` 1.0 build fix).
 
 ---
 

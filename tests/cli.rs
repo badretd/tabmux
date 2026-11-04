@@ -34,9 +34,18 @@ fn version_prints_name_and_cargo_version() {
     assert!(output.status.success());
 
     let stdout = String::from_utf8(output.stdout).expect("version is UTF-8");
-    assert_eq!(
-        stdout.trim(),
-        format!("tabmux {}", env!("CARGO_PKG_VERSION"))
+    let version = stdout.trim();
+    assert!(
+        version.starts_with(&format!("tabmux {} (commit ", env!("CARGO_PKG_VERSION"))),
+        "unexpected version string: {version}"
+    );
+    assert!(
+        version.contains("; features "),
+        "features missing: {version}"
+    );
+    assert!(
+        version.ends_with(')'),
+        "version string is not closed: {version}"
     );
 }
 

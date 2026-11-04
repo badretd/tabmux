@@ -213,6 +213,7 @@ fn hidden_sheets_are_exported_and_reported() {
     assert_eq!(report["summary"]["error"], 0);
 }
 
+#[cfg(all(feature = "excel", feature = "html"))]
 #[test]
 fn twenty_html_tables_become_sheets_with_stable_collisions() {
     let dir = tempfile::tempdir().unwrap();
@@ -251,6 +252,7 @@ fn twenty_html_tables_become_sheets_with_stable_collisions() {
     assert!(error.contains("html.sheet_name_collision"));
 }
 
+#[cfg(all(feature = "excel", feature = "html"))]
 #[test]
 fn malformed_html_is_tolerated_and_skipped_tables_are_reported() {
     let dir = tempfile::tempdir().unwrap();

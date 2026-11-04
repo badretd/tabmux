@@ -30,7 +30,7 @@ use self::reporting::{ReportContext, input_artifacts, output_artifact, table_eve
 #[derive(Debug, Parser)]
 #[command(
     name = "tabmux",
-    version,
+    version = env!("TABMUX_VERSION"),
     about = "Convert messy tabular sources into clean tables and workbooks",
     long_about = "tabmux converts messy tabular sources into clean tables and workbooks with \
                   safe writes, a replayable pipeline, and an honest loss report.",

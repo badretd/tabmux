@@ -604,5 +604,10 @@ fn batch_report_collects_unsupported_members() {
     let report = read_json(&report_path);
     let codes = event_codes(&report);
     assert!(codes.iter().any(|code| code == "format.unsupported"));
-    assert_eq!(report["outputs"].as_array().unwrap().len(), 4);
+    // Without the `html` feature, page.html is skipped as unsupported.
+    let expected_outputs = if cfg!(feature = "html") { 4 } else { 3 };
+    assert_eq!(
+        report["outputs"].as_array().unwrap().len(),
+        expected_outputs
+    );
 }

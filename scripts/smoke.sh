@@ -43,7 +43,8 @@ fail() {
 section "Phase 0: CLI skeleton and format matrix"
 
 version="$("$BIN" --version)"
-[[ "$version" =~ ^tabmux\ [0-9]+\.[0-9]+\.[0-9]+$ ]] \
+version_re='^tabmux [0-9]+\.[0-9]+\.[0-9]+ \(commit .+; features .+\)$'
+[[ "$version" =~ $version_re ]] \
   || fail "--version output was '$version'"
 printf 'version: %s\n' "$version"
 

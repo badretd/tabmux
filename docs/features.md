@@ -1,6 +1,6 @@
 # tabmux feature specification
 
-> **Status:** product/feature plan, 2026-11-04  
+> **Status:** shipped v0.1.0 feature inventory (Phases 0–12), 2026-11-04  
 > **Companion documents:** [`analogues.md`](./analogues.md) (competitive research), [`dependencies.md`](./dependencies.md) (crate/tooling plan), and [`devplan.md`](./devplan.md) (authoritative v1 phase plan).  
 > **Goal:** define the feature surface of a single-binary, FFmpeg-style Swiss Army knife for tabular data.
 

@@ -1,0 +1,8 @@
+tabmux
+Copyright (c) 2026 tabmux contributors
+
+This product is licensed under the MIT License or the Apache License,
+Version 2.0, at your option. See LICENSE-MIT and LICENSE-APACHE.
+
+Third-party dependencies retain their own licenses. See the generated SBOM
+(SBOM.cdx.json) and Cargo.lock for the dependency inventory.

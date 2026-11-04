@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  verify:
+    name: verify and package (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag matches Cargo version
+        if: github.ref_type == 'tag'
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 --offline \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          if [[ "v$version" != "$GITHUB_REF_NAME" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version v$version" >&2
+            exit 1
+          fi
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-targets --all-features
+
+      - name: Run smoke test
+        run: ./scripts/smoke.sh
+
+      - name: Run smoke test with sql-duckdb
+        run: TABMUX_FEATURES=sql-duckdb ./scripts/smoke.sh
+
+      - name: Build, smoke, and package release
+        run: TABMUX_SKIP_CHECKS=1 ./scripts/build-release.sh
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist/
+
+  platform:
+    name: package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --all-targets
+
+      - name: Build and package release
+        shell: bash
+        run: TABMUX_SKIP_CHECKS=1 TABMUX_SKIP_SMOKE=1 ./scripts/build-release.sh
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: dist/
+
+  publish:
+    name: publish GitHub release
+    needs: [verify, platform]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate aggregated checksums
+        run: |
+          cd dist
+          files=($(find . -maxdepth 1 -type f \
+            \( -name 'tabmux-*.tar.gz' -o -name 'SBOM-*.cdx.json' \) -print | sort))
+          sha256sum "${files[@]}" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/*.tar.gz
+            dist/SBOM-*.cdx.json
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
+          generate_release_notes: false
