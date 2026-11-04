@@ -28,6 +28,13 @@ demand by a script in a later phase.
 | `typed.csv` | Int, float, bool, date, datetime, time, and a leading-zero text code for native-type workbook tests |
 | `nulls.csv` | Empty cells that must round-trip as nulls through XLSX/ODS |
 
+## Document fixtures
+
+| Fixture | Purpose |
+|---|---|
+| `tables.html` | Four `<table>` elements: `Sales` (header `colspan`, data `rowspan`, `tfoot`), `Regions` (contains a nested `Notes` table), and a one-row layout table that must be skipped. Used for HTML → workbook, index-sheet, stack, and merge-policy tests. |
+| `header-row.html` | A title row followed by an unmarked header row; used to test `--header-row` and first-row header inference. |
+
 ## Workbook fixtures
 
 | Fixture | Purpose |

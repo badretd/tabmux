@@ -1952,3 +1952,272 @@ fn merge_can_write_a_workbook_output() {
     assert_eq!(tables[0].rows.len(), 5);
     assert_eq!(tables[0].rows[4][0], CellValue::Int(5));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 6: HTML table ingestion, HTML -> workbook
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "html")]
+#[test]
+fn html_tables_become_sheets_with_captions_and_an_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("tables.xlsx");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("tables.html"))
+        .arg(&destination)
+        .arg("--tables")
+        .arg("all")
+        .arg("--sheet-per-table")
+        .arg("--use-captions")
+        .arg("--index-sheet")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let diagnostics = stderr(&output);
+    assert!(
+        diagnostics.contains("html.merged_cell_expanded"),
+        "merged cells were not reported: {diagnostics}"
+    );
+    assert!(
+        diagnostics.contains("html.header_colspan_expanded"),
+        "colspan header expansion was not reported: {diagnostics}"
+    );
+    assert!(
+        !diagnostics.contains("merged cell at table row 1 column 3"),
+        "header colspan expansion was also reported as a merged cell: {diagnostics}"
+    );
+    assert!(
+        !diagnostics.contains("html.duplicate_header"),
+        "colspan expansion must not be reported as a duplicate header: {diagnostics}"
+    );
+    assert!(
+        diagnostics.contains("html.table_skipped"),
+        "the layout table was not reported as skipped: {diagnostics}"
+    );
+    assert!(
+        diagnostics.contains("html.nested_table_extracted"),
+        "the nested table was not reported: {diagnostics}"
+    );
+    assert!(
+        diagnostics.contains("wrote 4 sheet(s)"),
+        "the workbook summary was not printed: {diagnostics}"
+    );
+    assert!(
+        diagnostics.contains("skipped table-4 (1 row(s) < --min-rows 2)"),
+        "the workbook summary did not describe the skipped table: {diagnostics}"
+    );
+
+    let tables = read_workbook(&destination, FormatId::Xlsx);
+    let names = tables
+        .iter()
+        .map(|table| table.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["_index", "Sales", "Regions", "Notes"]);
+
+    let index = &tables[0];
+    assert_eq!(
+        index.column_names(),
+        [
+            "source", "table", "caption", "rows", "columns", "status", "reason"
+        ]
+    );
+    assert_eq!(
+        index.rows.len(),
+        4,
+        "index rows must include every data table and skipped table"
+    );
+    assert_eq!(index.rows[0][2], CellValue::Text("Sales".into()));
+    assert_eq!(index.rows[0][5], CellValue::Text("included".into()));
+    assert_eq!(index.rows[2][2], CellValue::Text("Notes".into()));
+    assert_eq!(index.rows[2][5], CellValue::Text("included".into()));
+    assert!(
+        index.rows[2][6]
+            .to_text("")
+            .contains("nested table extracted from table-2"),
+        "the nested table should explain the outer-cell marker"
+    );
+    assert_eq!(index.rows[3][1], CellValue::Int(4));
+    assert_eq!(index.rows[3][5], CellValue::Text("skipped".into()));
+    assert_eq!(
+        index.rows[3][6],
+        CellValue::Text("1 row(s) < --min-rows 2".into())
+    );
+
+    let sales = &tables[1];
+    assert_eq!(
+        sales.column_names(),
+        ["id", "name", "territory", "territory_2", "amount"]
+    );
+    assert_eq!(
+        sales.rows[0],
+        vec![
+            CellValue::Int(1),
+            CellValue::Text("Alice".into()),
+            CellValue::Text("North".into()),
+            CellValue::Text("EU".into()),
+            CellValue::Int(120),
+        ]
+    );
+    assert_eq!(
+        sales.rows[1],
+        vec![
+            CellValue::Int(2),
+            CellValue::Text("Bob".into()),
+            CellValue::Text("North".into()),
+            CellValue::Text("US".into()),
+            CellValue::Float(80.5),
+        ],
+        "rowspan must duplicate North and colspan must keep US in the second subcolumn"
+    );
+
+    let regions = &tables[2];
+    assert_eq!(
+        regions.rows[0][2],
+        CellValue::Text("[table 3]".into()),
+        "the outer cell should keep a marker for the nested table"
+    );
+}
+
+#[cfg(feature = "html")]
+#[test]
+fn html_sheets_are_listed_by_caption() {
+    let output = tabmux()
+        .arg("sheets")
+        .arg(fixture("tables.html"))
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Sales\nRegions\nNotes\n"
+    );
+}
+
+#[cfg(feature = "html")]
+#[test]
+fn html_all_tables_can_be_stacked_with_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("stacked.csv");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("tables.html"))
+        .arg(&destination)
+        .arg("--tables")
+        .arg("all")
+        .arg("--stack")
+        .arg("--add-source-column")
+        .arg("table")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let text = fs::read_to_string(&destination).unwrap();
+    assert_eq!(text.lines().count(), 7, "header + six data rows");
+    assert!(
+        text.starts_with(
+            "id,name,territory,territory_2,amount,region,manager,details,note,table\n"
+        )
+    );
+    assert!(text.contains(",table-1"));
+    assert!(text.contains(",table-3"));
+    assert!(
+        !text.contains("Logo"),
+        "layout table leaked into the output"
+    );
+}
+
+#[cfg(feature = "html")]
+#[test]
+fn html_merge_policy_and_header_row_are_honored() {
+    let first = tabmux()
+        .arg("convert")
+        .arg(fixture("tables.html"))
+        .arg("-")
+        .arg("--tables")
+        .arg("1")
+        .arg("--merge-policy")
+        .arg("first")
+        .output()
+        .unwrap();
+    assert_success(&first);
+    let text = String::from_utf8(first.stdout).unwrap();
+    assert!(text.lines().next().unwrap().contains("column_4"));
+    assert!(text.contains("2,Bob,,US,80.5"));
+
+    let error = tabmux()
+        .arg("convert")
+        .arg(fixture("tables.html"))
+        .arg("-")
+        .arg("--tables")
+        .arg("1")
+        .arg("--merge-policy")
+        .arg("error")
+        .output()
+        .unwrap();
+    assert_eq!(error.status.code(), Some(1));
+    assert!(stderr(&error).contains("--merge-policy"));
+
+    let explicit = tabmux()
+        .arg("convert")
+        .arg(fixture("header-row.html"))
+        .arg("-")
+        .arg("--header-row")
+        .arg("2")
+        .output()
+        .unwrap();
+    assert_success(&explicit);
+    assert_eq!(
+        String::from_utf8(explicit.stdout).unwrap(),
+        "id,amount\n1,10\n2,20\n"
+    );
+
+    let inferred = tabmux()
+        .arg("convert")
+        .arg(fixture("header-row.html"))
+        .arg("-")
+        .output()
+        .unwrap();
+    assert_success(&inferred);
+    assert!(
+        String::from_utf8(inferred.stdout)
+            .unwrap()
+            .starts_with("Quarterly report,FY26\n")
+    );
+}
+
+#[cfg(feature = "html")]
+#[test]
+fn html_sheet_per_table_requires_a_workbook_output() {
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("tables.html"))
+        .arg("-")
+        .arg("--tables")
+        .arg("all")
+        .arg("--sheet-per-table")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("--sheet-per-table"));
+}
+
+#[cfg(feature = "html")]
+#[test]
+fn html_unknown_table_lists_available_tables() {
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("tables.html"))
+        .arg("-")
+        .arg("--tables")
+        .arg("Missing")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let message = stderr(&output);
+    assert!(message.contains("Missing"));
+    assert!(message.contains("table-1"));
+}

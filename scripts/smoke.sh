@@ -435,4 +435,80 @@ printf 'id,name\n1,Alice\n2,Bob\n1,Alice\n' >"$TMP_DIR/duplicates.csv"
   || fail "dedupe did not keep exactly the first occurrences"
 echo "dedupe: ok"
 
+section "Phase 6: HTML table ingestion, HTML -> workbook"
+
+"$BIN" convert fixtures/tables.html "$TMP_DIR/tables.xlsx" \
+  --tables all --sheet-per-table --use-captions --index-sheet \
+  2>"$TMP_DIR/html.err"
+html_sheets="$("$BIN" sheets "$TMP_DIR/tables.xlsx")"
+[[ "$html_sheets" == $'_index\nSales\nRegions\nNotes' ]] \
+  || fail "HTML workbook sheets were '$html_sheets'"
+grep -q 'html.merged_cell_expanded' "$TMP_DIR/html.err" \
+  || fail "HTML colspan/rowspan was not reported"
+grep -q 'html.header_colspan_expanded' "$TMP_DIR/html.err" \
+  || fail "HTML header colspan expansion was not reported"
+if grep -q 'html.duplicate_header' "$TMP_DIR/html.err"; then
+  fail "HTML colspan expansion was misreported as a duplicate header"
+fi
+grep -q 'html.table_skipped' "$TMP_DIR/html.err" \
+  || fail "the HTML layout table was not reported as skipped"
+grep -q 'html.nested_table_extracted' "$TMP_DIR/html.err" \
+  || fail "the nested HTML table was not reported"
+grep -q 'wrote 4 sheet(s)' "$TMP_DIR/html.err" \
+  || fail "the workbook summary was not printed"
+grep -q 'skipped table-4 (1 row(s) < --min-rows 2)' "$TMP_DIR/html.err" \
+  || fail "the workbook summary did not describe the skipped table"
+
+"$BIN" convert "$TMP_DIR/tables.xlsx" - --sheet _index >"$TMP_DIR/html-index.csv"
+[[ "$(head -n 1 "$TMP_DIR/html-index.csv")" \
+  == "source,table,caption,rows,columns,status,reason" ]] \
+  || fail "the HTML index sheet has the wrong header"
+[[ "$(wc -l <"$TMP_DIR/html-index.csv" | tr -d ' ')" == "5" ]] \
+  || fail "the HTML index sheet must contain included and skipped tables"
+grep -q '^fixtures/tables.html,1,Sales,4,5,included,$' "$TMP_DIR/html-index.csv" \
+  || fail "the HTML index sheet is missing Sales metadata"
+grep -q '^fixtures/tables.html,3,Notes,1,2,included,nested table extracted from table-2' \
+  "$TMP_DIR/html-index.csv" \
+  || fail "the HTML index sheet is missing the nested-table note"
+grep -q '^fixtures/tables.html,4,,1,2,skipped,1 row(s) < --min-rows 2$' \
+  "$TMP_DIR/html-index.csv" \
+  || fail "the HTML index sheet is missing the skipped layout table"
+
+"$BIN" convert "$TMP_DIR/tables.xlsx" - --sheet Sales >"$TMP_DIR/html-sales.csv"
+grep -q '^id,name,territory,territory_2,amount$' "$TMP_DIR/html-sales.csv" \
+  || fail "HTML Sales has the wrong header"
+grep -q '^2,Bob,North,US,80.5$' "$TMP_DIR/html-sales.csv" \
+  || fail "HTML rowspan expansion is missing"
+grep -q '^,Total,,,400.5$' "$TMP_DIR/html-sales.csv" \
+  || fail "HTML tfoot rows were lost"
+echo "HTML -> workbook: ok"
+
+"$BIN" convert fixtures/tables.html "$TMP_DIR/html-stacked.csv" \
+  --tables all --stack --add-source-column table >/dev/null 2>&1
+[[ "$(wc -l <"$TMP_DIR/html-stacked.csv" | tr -d ' ')" == "7" ]] \
+  || fail "HTML stack did not contain all data rows"
+grep -q ',table-1$' "$TMP_DIR/html-stacked.csv" \
+  || fail "HTML stack is missing table provenance"
+grep -q ',table-3$' "$TMP_DIR/html-stacked.csv" \
+  || fail "the nested HTML table was not stacked"
+if grep -q 'Logo' "$TMP_DIR/html-stacked.csv"; then
+  fail "the HTML layout table leaked into the output"
+fi
+echo "HTML stack: ok"
+
+"$BIN" convert fixtures/header-row.html - --header-row 2 >"$TMP_DIR/html-header.csv"
+[[ "$(cat "$TMP_DIR/html-header.csv")" == $'id,amount\n1,10\n2,20' ]] \
+  || fail "--header-row 2 produced the wrong table"
+
+set +e
+"$BIN" convert fixtures/tables.html - --tables 1 --merge-policy error \
+  >/dev/null 2>"$TMP_DIR/html-merge.err"
+html_merge_status=$?
+set -e
+[[ "$html_merge_status" -eq 1 ]] \
+  || fail "--merge-policy error exited $html_merge_status, expected 1"
+grep -q -- '--merge-policy' "$TMP_DIR/html-merge.err" \
+  || fail "--merge-policy error did not explain the policy choice"
+echo "HTML header/merge policy: ok"
+
 printf '\nsmoke: all checks passed\n'

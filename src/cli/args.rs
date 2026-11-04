@@ -12,29 +12,53 @@ use crate::ops::merge::MergeMode;
 #[derive(Debug, Clone, Args)]
 pub struct SheetArgs {
     /// Read one sheet by name.
-    #[arg(long, value_name = "NAME", conflicts_with_all = ["sheet_index", "all_sheets"])]
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["sheet_index", "all_sheets", "tables"])]
     pub sheet: Option<String>,
 
     /// Read one sheet by 1-based index.
-    #[arg(long, value_name = "N", conflicts_with_all = ["sheet", "all_sheets"])]
+    #[arg(long, value_name = "N", conflicts_with_all = ["sheet", "all_sheets", "tables"])]
     pub sheet_index: Option<usize>,
 
     /// Read every sheet in workbook order.
-    #[arg(long, conflicts_with_all = ["sheet", "sheet_index"])]
+    #[arg(long, conflicts_with_all = ["sheet", "sheet_index", "tables"])]
     pub all_sheets: bool,
+
+    /// Select HTML tables: all, a 1-based index, or a caption/name.
+    #[arg(long, value_name = "SPEC", conflicts_with_all = ["sheet", "sheet_index", "all_sheets"])]
+    pub tables: Option<String>,
 }
 
 impl SheetArgs {
-    pub fn selection(&self) -> formats::SheetSelection {
+    pub fn selection(&self) -> Result<formats::SheetSelection> {
         if self.all_sheets {
-            formats::SheetSelection::All
-        } else if let Some(index) = self.sheet_index {
-            formats::SheetSelection::Index(index)
-        } else if let Some(sheet) = &self.sheet {
-            formats::SheetSelection::Named(sheet.clone())
-        } else {
-            formats::SheetSelection::Default
+            return Ok(formats::SheetSelection::All);
         }
+        if let Some(index) = self.sheet_index {
+            if index == 0 {
+                return Err(Error::usage("sheet indices are 1-based; 0 is not valid"));
+            }
+            return Ok(formats::SheetSelection::Index(index));
+        }
+        if let Some(sheet) = &self.sheet {
+            return Ok(formats::SheetSelection::Named(sheet.clone()));
+        }
+        if let Some(specification) = &self.tables {
+            let specification = specification.trim();
+            if specification.is_empty() {
+                return Err(Error::usage("--tables requires all, an index, or a name"));
+            }
+            if specification.eq_ignore_ascii_case("all") {
+                return Ok(formats::SheetSelection::All);
+            }
+            if let Ok(index) = specification.parse::<usize>() {
+                if index == 0 {
+                    return Err(Error::usage("table indices are 1-based; 0 is not valid"));
+                }
+                return Ok(formats::SheetSelection::Index(index));
+            }
+            return Ok(formats::SheetSelection::Named(specification.to_owned()));
+        }
+        Ok(formats::SheetSelection::Default)
     }
 }
 
@@ -57,19 +81,44 @@ pub struct ReadArgs {
     #[arg(long, value_enum, default_value_t = RaggedPolicy::Error)]
     pub ragged: RaggedPolicy,
 
+    /// HTML header row (1-based). Rows before it are discarded.
+    #[arg(long, value_name = "N", conflicts_with = "no_header")]
+    pub header_row: Option<usize>,
+
+    /// How HTML colspan/rowspan cells are represented.
+    #[arg(long, value_enum, default_value_t = MergePolicyArg::Expand)]
+    pub merge_policy: MergePolicyArg,
+
+    /// Prefer HTML table captions for output sheet names.
+    #[arg(long)]
+    pub use_captions: bool,
+
+    /// Skip HTML tables with fewer rows than this.
+    #[arg(long, value_name = "N", default_value_t = 2)]
+    pub min_rows: usize,
+
+    /// Skip HTML tables with fewer columns than this.
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub min_cols: usize,
+
     #[command(flatten)]
     pub sheets: SheetArgs,
 }
 
 impl ReadArgs {
-    pub fn options(&self) -> formats::ReadOptions {
-        formats::ReadOptions {
+    pub fn options(&self) -> Result<formats::ReadOptions> {
+        Ok(formats::ReadOptions {
             delimiter: self.delimiter,
             has_header: !self.no_header,
             ragged: self.ragged,
             encoding: self.encoding.clone(),
-            sheets: self.sheets.selection(),
-        }
+            sheets: self.sheets.selection()?,
+            merge_policy: self.merge_policy.into(),
+            header_row: self.header_row,
+            use_captions: self.use_captions,
+            min_rows: self.min_rows,
+            min_cols: self.min_cols,
+        })
     }
 }
 
@@ -191,6 +240,14 @@ pub struct ConvertArgs {
     #[arg(long)]
     pub sheet_per_input: bool,
 
+    /// Assemble one worksheet per selected HTML table.
+    #[arg(long)]
+    pub sheet_per_table: bool,
+
+    /// Add an _index worksheet describing the selected tables.
+    #[arg(long)]
+    pub index_sheet: bool,
+
     /// Worksheet-name template for workbook output. Supports {stem}, {sheet},
     /// {name}, and {index}.
     #[arg(long, value_name = "TEMPLATE", conflicts_with = "sheet_name")]
@@ -228,6 +285,27 @@ impl ConvertArgs {
         let output = self.inputs.last().cloned().unwrap();
         let inputs = self.inputs[..self.inputs.len() - 1].to_vec();
         Ok((inputs, output))
+    }
+}
+
+/// HTML merged-cell policy exposed on the command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum MergePolicyArg {
+    /// Copy the value into every covered cell.
+    Expand,
+    /// Keep the value in the first covered cell only.
+    First,
+    /// Reject tables that contain merged cells.
+    Error,
+}
+
+impl From<MergePolicyArg> for formats::MergePolicy {
+    fn from(policy: MergePolicyArg) -> Self {
+        match policy {
+            MergePolicyArg::Expand => Self::Expand,
+            MergePolicyArg::First => Self::First,
+            MergePolicyArg::Error => Self::Error,
+        }
     }
 }
 

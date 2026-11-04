@@ -33,7 +33,7 @@
 |---|---|---|---|
 | `core` *(default)* | CSV/TSV, JSON/JSONL, inspection, select/head/count, safe writes, loss report, pipeline, compression (gzip/zstd/ZIP), terminal output | clap, csv, serde, serde_json, toml, comfy-table, indicatif, tempfile, blake3 | Small |
 | `excel` | XLS/XLSX/XLSB/ODS read; XLSX/ODS write; multi-sheet; basic formatting | calamine, rust_xlsxwriter, spreadsheet-ods, zip, quick-xml | Medium |
-| `html` | HTML table extraction, HTML table inventory | scraper, html-escape | Small |
+| `html` | HTML table extraction, HTML table inventory | built-in parser (no external crate) | Small |
 | `sql-duckdb` | DuckDB export and read-only query | duckdb, arrow | **Large** (bundled C++) |
 | `full` | All v1 features | `core` + `excel` + `html` + `sql-duckdb` | Medium–large |
 
@@ -202,12 +202,12 @@ XLSX paths expose the same CLI and table-model contract.
 
 ### 3.5 Structured documents: JSON, YAML, XML, HTML, Markdown, DOCX, email
 
-> **v1:** `serde_json`, `toml` (config/pipeline), `scraper`, `html-escape`. **CUT:** YAML table I/O, XML/XPath, jq/JSONPath, Markdown/RST/LaTeX output, DOCX/EML/PDF ingestion (deferred). **DEFERRED:** `minijinja` is used only for internal naming, not user templates in v1.
+> **v1:** `serde_json`, `toml` (config/pipeline), built-in HTML table parser. **CUT:** YAML table I/O, XML/XPath, jq/JSONPath, Markdown/RST/LaTeX output, DOCX/EML/PDF ingestion (deferred). **DEFERRED:** `minijinja` is used only for internal naming, not user templates in v1.
 
 | Crate | Version | Features / notes | Used for | Feature |
 |---|---|---|---|---|
 | `quick-xml` | `0.42` | `serialize`, `encoding` | XML read/write, XPath-like traversal (manual), DOCX/ODT XML | xml / office |
-| `scraper` | `0.29` | — | HTML parsing, CSS selectors, table extraction | html |
+| `scraper` | `0.29` | — | HTML parsing, CSS selectors, table extraction (not used; built-in parser ships instead) | html (optional alternative) |
 | `html5ever` | `0.35` | — | Lower-level HTML parsing (optional direct use) | html |
 | `html-escape` | `0.3` | — | HTML escaping/unescaping | html |
 | `table-extract` | `0.2` | — | Alternative HTML table extractor; optional | html |
@@ -230,9 +230,17 @@ XLSX paths expose the same CLI and table-model contract.
 **Decisions**
 
 - Use `serde_yaml_ng` for YAML serde workflows; `serde_yaml` is deprecated. Keep `saphyr` optional for strict YAML 1.2.
-- Use `scraper` for HTML tables; `table-extract` is a fallback for tricky layouts.
+- Use the built-in tolerant HTML parser for tables; `scraper` remains an optional alternative if it becomes available.
 - For DOCX reading, unzip with `zip` and parse `word/document.xml` with `quick-xml` if `dotext` is insufficient.
 - Never execute macros or scripts from Office documents.
+
+**Build note (Phase 6)**
+
+`scraper` was not available in the offline registry. HTML table ingestion uses
+the dependency-free parser in `formats/html.rs`; the `html` feature therefore
+has no external crate and is safe to include in the default build. If `scraper`
+becomes available later it can replace the tokenizer without changing the CLI,
+table model, or loss-event contract.
 
 ### 3.6 SQL and databases
 
@@ -549,7 +557,7 @@ XLSX paths expose the same CLI and table-model contract.
 | CSV/TSV/JSON I/O | `csv`, `csv-sniffer`, `serde_json`, `encoding_rs`, `chardetng`, `encoding_rs_io`, `unicode-bom` |
 | XLSX/XLS/XLSB/ODS read | `calamine`, `zip`, `quick-xml`, `chrono`/`jiff` |
 | XLSX/ODS write | `rust_xlsxwriter`, `spreadsheet-ods`, `zip`, `quick-xml` |
-| HTML tables | `scraper`, `html-escape` |
+| HTML tables | built-in tolerant parser in `formats/html.rs` |
 | Directory/ZIP ingestion | `walkdir`, `globset`, `zip`, `same-file`, `dunce` |
 | Basic transforms | `indexmap`, `itertools`, `regex`, `natord` |
 | Merge/schema diff | `indexmap`, `hashbrown`, `ahash`, `serde_json` |
@@ -614,7 +622,7 @@ excel = [
   "dep:zip", "dep:quick-xml",
 ]
 
-html = ["dep:scraper", "dep:html-escape"]
+html = []
 
 sql-duckdb = ["dep:duckdb"]
 
@@ -820,7 +828,7 @@ These are guardrails, not hard limits; measure on CI and adjust.
 | **3 ODS read** | `calamine` (ODS support) | ODS read, all-sheets, row/cell output |
 | **4 Workbook write** | `rust_xlsxwriter`, `spreadsheet-ods` | XLSX/ODS write, multi-sheet, basic formatting |
 | **5 Merge/transforms** | `hashbrown`/std collections, `natord` | Merge, schema diff, filter/sort/rename/dedupe |
-| **6 HTML tables** | `scraper`, `html-escape` | HTML table extraction, HTML → workbook |
+| **6 HTML tables** | none (built-in parser) | HTML table extraction, HTML → workbook |
 | **7 Batch ingestion** | `walkdir`, `globset`, `zip` | Directory/ZIP batch conversion |
 | **8 Pipeline** | `toml`, `serde` | TOML manifest, dry-run, replay |
 | **9 Loss/provenance** | `serde_json`, `blake3` | Loss report, manifest, strict mode |

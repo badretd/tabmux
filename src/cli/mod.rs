@@ -113,6 +113,43 @@ fn convert(args: ConvertArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
     if args.add_source_column.is_some() && !args.stack {
         return Err(Error::usage("--add-source-column requires --stack"));
     }
+    if args.sheet_per_table {
+        if args.stack {
+            return Err(Error::usage(
+                "--sheet-per-table cannot be combined with --stack",
+            ));
+        }
+        if args.split_sheets
+            || output == "-"
+            || !is_workbook_output(detect_supported_output(&output)?)
+        {
+            return Err(Error::usage(
+                "--sheet-per-table requires a workbook output (.xlsx or .ods)",
+            ));
+        }
+    }
+    if args.index_sheet {
+        if args.split_sheets || output == "-" {
+            return Err(Error::usage(
+                "--index-sheet requires a workbook output (.xlsx or .ods)",
+            ));
+        }
+        if !is_workbook_output(detect_supported_output(&output)?) {
+            return Err(Error::usage(
+                "--index-sheet requires a workbook output (.xlsx or .ods)",
+            ));
+        }
+        if args.stack {
+            return Err(Error::usage(
+                "--index-sheet cannot be combined with --stack",
+            ));
+        }
+        if args.sheet_name.is_some() || args.sheet_name_template.is_some() {
+            return Err(Error::usage(
+                "--index-sheet cannot be combined with --sheet-name or --sheet-name-template",
+            ));
+        }
+    }
     if args.split_sheets
         && let Some(format) = formats::detect_path(Path::new(&output))
         && is_workbook_output(format)
@@ -248,9 +285,13 @@ fn convert_workbook(
     SafeWriter::ensure_writable(Path::new(output), args.write.force)?;
 
     let mut selected = Vec::new();
+    let mut skipped = Vec::new();
+    let mut index_entries = Vec::new();
     for input in inputs {
-        let (tables, _) = load_tables(input, &args.read)?;
-        selected.extend(tables.tables);
+        let (set, _) = load_tables(input, &args.read)?;
+        index_entries.extend(index_entries_for_set(&set));
+        selected.extend(set.tables);
+        skipped.extend(set.skipped);
     }
 
     if selected.is_empty() {
@@ -264,6 +305,11 @@ fn convert_workbook(
     };
 
     name_workbook_sheets(&mut tables, args)?;
+
+    if args.index_sheet {
+        let index = build_index_table(&tables, &index_entries, output, format);
+        tables.insert(0, index);
+    }
 
     // Writing a workbook always includes source-fidelity events.
     for table in &tables {
@@ -284,6 +330,12 @@ fn convert_workbook(
                 table.width()
             );
         }
+        if !skipped.is_empty() && diagnostics.enabled() {
+            eprintln!(
+                "tabmux: dry-run: {}",
+                workbook_summary(&tables, &skipped, true)
+            );
+        }
         return Ok(());
     }
 
@@ -294,7 +346,12 @@ fn convert_workbook(
 
     let mut writer = SafeWriter::create(Path::new(output), args.write.force, args.write.backup)?;
     formats::write_tables(writer.file_mut(), &tables, format, &options)?;
-    writer.commit()
+    writer.commit()?;
+
+    if diagnostics.enabled() {
+        eprintln!("tabmux: {}", workbook_summary(&tables, &skipped, false));
+    }
+    Ok(())
 }
 
 #[cfg(not(feature = "excel"))]
@@ -308,6 +365,161 @@ fn convert_workbook(
     Err(Error::unsupported(
         "workbook writing is not compiled in (enable the excel feature)",
     ))
+}
+
+/// One row in the `_index` worksheet.
+#[cfg(feature = "excel")]
+#[derive(Debug, Clone)]
+struct IndexEntry {
+    source: String,
+    table: usize,
+    caption: String,
+    rows: usize,
+    columns: usize,
+    status: &'static str,
+    reason: String,
+}
+
+/// Build index entries for one input, including tables that were skipped.
+#[cfg(feature = "excel")]
+fn index_entries_for_set(set: &TableSet) -> Vec<IndexEntry> {
+    let mut entries = Vec::with_capacity(set.tables.len() + set.skipped.len());
+    let mut per_source = std::collections::HashMap::<String, usize>::new();
+
+    for table in &set.tables {
+        let source_path = table.source.path.display().to_string();
+        let fallback = {
+            let number = per_source.entry(source_path.clone()).or_insert(0);
+            *number += 1;
+            *number
+        };
+        let number = table
+            .source
+            .table
+            .as_deref()
+            .and_then(|table| table.strip_prefix("table-"))
+            .and_then(|number| number.parse::<usize>().ok())
+            .unwrap_or(fallback);
+        let reason = table
+            .source
+            .nested_in
+            .as_ref()
+            .map(|parent| {
+                format!(
+                    "nested table extracted from {parent}; outer cell replaced with marker '[table {number}]'"
+                )
+            })
+            .unwrap_or_default();
+
+        entries.push(IndexEntry {
+            source: source_path,
+            table: number,
+            caption: table.source.caption.clone().unwrap_or_default(),
+            rows: table.row_count(),
+            columns: table.width(),
+            status: "included",
+            reason,
+        });
+    }
+
+    for skipped in &set.skipped {
+        entries.push(IndexEntry {
+            source: skipped.source.path.display().to_string(),
+            table: skipped.table,
+            caption: skipped.caption.clone().unwrap_or_default(),
+            rows: skipped.rows,
+            columns: skipped.columns,
+            status: "skipped",
+            reason: skipped.reason.clone(),
+        });
+    }
+
+    entries.sort_by_key(|entry| entry.table);
+    entries
+}
+
+/// Build the `_index` worksheet inserted by `--index-sheet`.
+#[cfg(feature = "excel")]
+fn build_index_table(
+    tables: &[Table],
+    entries: &[IndexEntry],
+    output: &str,
+    format: FormatId,
+) -> Table {
+    let rows = entries
+        .iter()
+        .map(|entry| {
+            vec![
+                CellValue::Text(entry.source.clone()),
+                CellValue::Int(entry.table as i64),
+                CellValue::Text(entry.caption.clone()),
+                CellValue::Int(entry.rows as i64),
+                CellValue::Int(entry.columns as i64),
+                CellValue::Text(entry.status.to_owned()),
+                CellValue::Text(entry.reason.clone()),
+            ]
+        })
+        .collect::<Vec<_>>();
+
+    let columns = vec![
+        Column::new("source", ColumnType::Text),
+        Column::new("table", ColumnType::Int),
+        Column::new("caption", ColumnType::Text),
+        Column::new("rows", ColumnType::Int),
+        Column::new("columns", ColumnType::Int),
+        Column::new("status", ColumnType::Text),
+        Column::new("reason", ColumnType::Text),
+    ];
+
+    let source = SourceRef::new(output, format).with_sheet("_index");
+    let mut used = tables
+        .iter()
+        .map(|table| table.name.to_lowercase())
+        .collect::<HashSet<_>>();
+    let name = formats::workbook_write::unique_sheet_name("_index", &mut used);
+
+    let mut index = Table::with_columns(name.clone(), source, columns, rows);
+    if name != "_index" {
+        index.push_warning(LossEvent::info(
+            "output.sheet_name_sanitized",
+            format!("index sheet name '_index' collided; wrote '{name}'"),
+        ));
+    }
+    index
+}
+
+/// A concise post-write inventory for workbook output.
+#[cfg(feature = "excel")]
+fn workbook_summary(
+    tables: &[Table],
+    skipped: &[crate::model::SkippedTable],
+    dry_run: bool,
+) -> String {
+    let names = tables
+        .iter()
+        .map(|table| table.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let verb = if dry_run { "would write" } else { "wrote" };
+    let mut summary = format!("{verb} {} sheet(s): {names}", tables.len());
+
+    if !skipped.is_empty() {
+        let details = skipped
+            .iter()
+            .map(|table| {
+                let label = table
+                    .caption
+                    .clone()
+                    .filter(|caption| !caption.trim().is_empty())
+                    .unwrap_or_else(|| format!("table-{}", table.table));
+                format!("{label} ({})", table.reason)
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        summary.push_str(&format!("; skipped {details}"));
+    }
+
+    summary
 }
 
 /// Apply `--sheet-name`/`--sheet-name-template`, then sanitise and deduplicate
@@ -990,7 +1202,7 @@ fn load_tables(path: &str, read: &ReadArgs) -> Result<(TableSet, FormatId)> {
     let bytes = crate::io::read_input(path)?;
     let format = detect_input_format(path, &bytes)?;
     let source = SourceRef::new(path, format);
-    let tables = formats::read_tables(&source, &bytes, format, &read.options())?;
+    let tables = formats::read_tables(&source, &bytes, format, &read.options()?)?;
     Ok((tables, format))
 }
 
@@ -1060,6 +1272,18 @@ fn sniff_content(bytes: &[u8]) -> Result<FormatId> {
     }
 
     let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        let trimmed = text.trim_start();
+        let lower = trimmed.to_ascii_lowercase();
+        if trimmed.starts_with('<')
+            && (lower.starts_with("<!doctype html")
+                || lower.starts_with("<html")
+                || lower.contains("<table"))
+        {
+            return Ok(FormatId::Html);
+        }
+    }
+
     Ok(
         match bytes
             .iter()

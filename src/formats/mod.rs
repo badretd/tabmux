@@ -12,6 +12,8 @@ use crate::error::{Error, Result};
 use crate::model::{SourceRef, Table, TableSet};
 
 pub mod csv;
+#[cfg(feature = "html")]
+pub mod html;
 pub mod json;
 #[cfg(feature = "excel")]
 pub mod ods;
@@ -210,6 +212,18 @@ pub enum SheetSelection {
     Index(usize),
 }
 
+/// How HTML `colspan`/`rowspan` cells are represented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MergePolicy {
+    /// Copy the value into every covered cell (the default).
+    #[default]
+    Expand,
+    /// Keep the value in the top-left cell only.
+    First,
+    /// Reject the input when a merged cell is present.
+    Error,
+}
+
 /// Options shared by all readers.
 #[derive(Debug, Clone)]
 pub struct ReadOptions {
@@ -218,6 +232,14 @@ pub struct ReadOptions {
     pub ragged: csv::RaggedPolicy,
     pub encoding: Option<String>,
     pub sheets: SheetSelection,
+    pub merge_policy: MergePolicy,
+    /// Explicit 1-based header row for HTML tables.
+    pub header_row: Option<usize>,
+    /// Prefer HTML `<caption>` text for table names.
+    pub use_captions: bool,
+    /// Layout-table filter for HTML input.
+    pub min_rows: usize,
+    pub min_cols: usize,
 }
 
 impl Default for ReadOptions {
@@ -228,6 +250,11 @@ impl Default for ReadOptions {
             ragged: csv::RaggedPolicy::Error,
             encoding: None,
             sheets: SheetSelection::Default,
+            merge_policy: MergePolicy::Expand,
+            header_row: None,
+            use_captions: false,
+            min_rows: 2,
+            min_cols: 1,
         }
     }
 }
@@ -282,6 +309,12 @@ pub fn sheet_names(source: &SourceRef, bytes: &[u8], format: FormatId) -> Result
             "{} support is not compiled in (enable the excel feature)",
             format.label()
         ))),
+        #[cfg(feature = "html")]
+        FormatId::Html => html::table_names(source, bytes),
+        #[cfg(not(feature = "html"))]
+        FormatId::Html => Err(Error::unsupported(
+            "html support is not compiled in (enable the html feature)",
+        )),
         _ => Err(Error::unsupported(format!(
             "{} is not a multi-table workbook",
             format.label()
@@ -361,10 +394,25 @@ pub fn read_tables(
             "{} support is not compiled in (enable the excel feature)",
             format.label()
         ))),
-        FormatId::Html => Err(Error::unsupported(format!(
-            "reading {} is not implemented yet",
-            format.label()
-        ))),
+        #[cfg(feature = "html")]
+        FormatId::Html => html::read(
+            source,
+            bytes,
+            &html::ReadOptions {
+                encoding: options.encoding.clone(),
+                has_header: options.has_header,
+                sheets: options.sheets.clone(),
+                merge_policy: options.merge_policy,
+                header_row: options.header_row,
+                use_captions: options.use_captions,
+                min_rows: options.min_rows,
+                min_cols: options.min_cols,
+            },
+        ),
+        #[cfg(not(feature = "html"))]
+        FormatId::Html => Err(Error::unsupported(
+            "html support is not compiled in (enable the html feature)",
+        )),
     }
 }
 

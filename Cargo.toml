@@ -7,9 +7,12 @@ license = "MIT OR Apache-2.0"
 description = "Safe, reproducible conversion of messy tabular sources into clean tables and workbooks"
 
 [features]
-default = ["core", "excel", "rust_xlsxwriter"]
+default = ["core", "excel", "html", "rust_xlsxwriter"]
 core = ["dep:clap", "dep:csv", "dep:encoding_rs", "dep:serde_json", "dep:tempfile", "dep:thiserror", "dep:chrono"]
 excel = ["dep:calamine", "dep:zip", "dep:quick-xml"]
+# HTML table extraction uses the built-in tolerant parser, so the feature has no
+# external dependency and stays cheap enough to include in the default build.
+html = []
 # Library-backed XLSX writer used by the default build. A build with only
 # `excel` enabled keeps the built-in manual writer as a fallback.
 rust_xlsxwriter = ["excel", "dep:rust_xlsxwriter"]

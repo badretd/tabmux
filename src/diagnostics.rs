@@ -64,6 +64,11 @@ impl DiagnosticsPolicy {
         }
     }
 
+    /// Whether any diagnostics are enabled.
+    pub fn enabled(&self) -> bool {
+        self.level != DiagnosticsLevel::None
+    }
+
     /// Decide whether an event should be printed in this context.
     ///
     /// `include_fidelity` is true when the command writes a workbook or the

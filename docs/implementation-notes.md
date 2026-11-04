@@ -192,6 +192,71 @@
   type conflict. Both are checked in and covered by integration tests and the
   smoke script.
 
+## Phase 6 — HTML table ingestion, HTML → workbook
+
+- **Parser:** `scraper` was not available in the offline registry, so
+  `formats/html.rs` contains a small, dependency-free, tolerant HTML tokenizer
+  and table parser. It handles comments, doctypes, quoted/unquoted attributes,
+  character references, `<caption>`, `<thead>`/`<tbody>`/`<tfoot>`, `<tr>`,
+  `<td>`/`<th>`, `colspan`, `rowspan`, `<br>`, and script/style suppression. It
+  does not execute scripts or load external resources. The `html` feature is
+  therefore a no-dependency feature and is part of the default build.
+- **Nested tables:** nested `<table>` elements are extracted as separate tables
+  in document order. The outer cell keeps a `[table N]` marker and the outer
+  table emits a warning (`html.nested_table_extracted`) because its cell content
+  was modified. The nested table records its parent (`table-N`), and the index
+  sheet explains the marker in its `reason` column. Table numbering follows
+  document order, including layout tables that are later skipped.
+- **Merged cells:** `--merge-policy expand` (default) copies the value to every
+  covered cell and reports `html.merged_cell_expanded`. `first` keeps the value
+  in the top-left cell and reports `html.merged_cell_first_only`. `error` fails
+  before any output is written. Overlapping spans produce
+  `html.merged_cell_overlap` and keep the existing value. A merge that only
+  spans header columns is reported as `html.header_colspan_expanded` instead of
+  `html.merged_cell_expanded`, so the same expansion is not logged twice.
+- **Header inference:** an explicit `--header-row N` wins (rows before it are
+  discarded). Otherwise the first row inside `<thead>` or the first row with
+  `<th>` cells becomes the header; when no `<th>` exists, the first row is used
+  and `html.header_inferred` is reported. `--no-header` generates
+  `column_1`, `column_2`, ... and treats every row as data. A header cell that
+  spans several columns produces `territory`, `territory_2`, ... and reports
+  `html.header_colspan_expanded` at info severity; that is normal expansion, not
+  loss. Two independent header cells with the same text still produce a
+  `html.duplicate_header` warning.
+- **Layout tables:** `--min-rows` (default 2) and `--min-cols` (default 1)
+  filter layout tables. The reason names only the failing threshold
+  (for example `1 row(s) < --min-rows 2`). A skipped table emits
+  `html.table_skipped` and is retained as inventory metadata rather than
+  discarded.
+- **Table selection:** `--tables all` is equivalent to `--all-sheets` for HTML.
+  `--tables N` selects a 1-based table number (including skipped numbers) and
+  `--tables NAME` accepts a caption, `table-N` name, or output table name.
+  `--sheet`/`--sheet-index` remain aliases for the same selection.
+- **Output naming:** `--use-captions` uses `<caption>` text for sheet names;
+  otherwise names are `table-1`, `table-2`, ... . Duplicate names are
+  deduplicated case-insensitively with stable suffixes and report
+  `html.sheet_name_collision`. The existing workbook sanitizer still enforces
+  Excel's 31-character and invalid-character rules.
+- **`--sheet-per-table`:** explicitly requests one worksheet per selected HTML
+  table. It requires a workbook output and cannot be combined with `--stack`.
+  `--index-sheet` prepends an `_index` worksheet with `source`, `table`,
+  `caption`, `rows`, `columns`, `status`, and `reason`. Every parsed table gets a
+  row: included tables use `status=included`, skipped tables use
+  `status=skipped` with the failing threshold, and nested tables explain the
+  outer-cell marker in `reason`. The index itself is not counted. The index
+  works for any multi-table input, not only HTML.
+- **Workbook summary:** after a successful workbook write (unless `--quiet`), a
+  one-line summary names every written sheet and lists skipped tables with their
+  reasons, for example `wrote 4 sheet(s): _index, Sales, Regions, Notes; skipped
+  table-4 (1 row(s) < --min-rows 2)`.
+- **HTML writing:** still out of scope. HTML is a read-only, multi-table source.
+- **Encoding:** HTML input uses the shared text decoder. Replacement characters
+  are reported as `csv.encoding_replaced` because the event is about the text
+  decoding path, not the HTML structure.
+- **Fixture:** `fixtures/tables.html` has three data tables (`Sales`, `Regions`,
+  nested `Notes`) plus a one-row layout table. `fixtures/header-row.html` covers
+  explicit header rows and first-row inference.
+
 ## Diagnostics policy
 
 - **Default (`summary`):** read-only commands show only warnings/errors that
@@ -218,8 +283,8 @@
 ## Scope guard
 
 Everything else follows the devplan scope: CSV/TSV/JSON and XLSX/ODS
-read/write, split/stack, row/cell inspection, and merge/concat with basic
-transforms are implemented. HTML ingestion, directory/ZIP batch mode, the
-pipeline manifest, the loss-report file, and DuckDB export are still ahead.
+read/write, HTML table ingestion, split/stack, row/cell inspection, and
+merge/concat with basic transforms are implemented. Directory/ZIP batch mode,
+the pipeline manifest, the loss-report file, and DuckDB export are still ahead.
 There is no network, and no `fs::write` in command code. All file outputs go
 through `io::SafeWriter`.

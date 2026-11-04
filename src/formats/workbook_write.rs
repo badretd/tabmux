@@ -29,7 +29,10 @@ pub const MAX_SHEET_NAME: usize = 31;
 /// application. Every other source already carries types and is only cloned.
 pub fn prepare_table(table: &Table) -> Table {
     let mut prepared = table.clone();
-    if matches!(prepared.source.format, FormatId::Csv | FormatId::Tsv) {
+    if matches!(
+        prepared.source.format,
+        FormatId::Csv | FormatId::Tsv | FormatId::Html
+    ) {
         infer_text_types(&mut prepared);
     }
     prepared

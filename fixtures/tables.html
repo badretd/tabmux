@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>tabmux HTML table fixture</title>
+  </head>
+  <body>
+    <h1>Quarterly tables</h1>
+
+    <table>
+      <caption>Sales</caption>
+      <thead>
+        <tr><th>id</th><th>name</th><th colspan="2">territory</th><th>amount</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td>Alice</td><td rowspan="2">North</td><td>EU</td><td>120</td></tr>
+        <tr><td>2</td><td>Bob</td><td>US</td><td>80.5</td></tr>
+        <tr><td>3</td><td>Carol</td><td>South</td><td>APAC</td><td>200</td></tr>
+      </tbody>
+      <tfoot>
+        <tr><td></td><td>Total</td><td></td><td></td><td>400.5</td></tr>
+      </tfoot>
+    </table>
+
+    <table>
+      <caption>Regions</caption>
+      <thead>
+        <tr><th>region</th><th>manager</th><th>details</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>North</td>
+          <td>Nia</td>
+          <td>
+            <table>
+              <caption>Notes</caption>
+              <thead>
+                <tr><th>id</th><th>note</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>1</td><td>Nested note</td></tr>
+              </tbody>
+            </table>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <table>
+      <tr><td>Logo</td><td>Navigation</td></tr>
+    </table>
+  </body>
+</html>

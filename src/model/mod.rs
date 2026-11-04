@@ -23,6 +23,11 @@ pub struct SourceRef {
     pub format: FormatId,
     pub sheet: Option<String>,
     pub table: Option<String>,
+    /// Caption text for sources that have one (currently HTML tables).
+    pub caption: Option<String>,
+    /// Parent table marker when this table was extracted from a nested HTML
+    /// table (for example `table-2`).
+    pub nested_in: Option<String>,
     pub row: Option<u64>,
     pub column: Option<String>,
     pub cell: Option<String>,
@@ -36,6 +41,8 @@ impl SourceRef {
             format,
             sheet: None,
             table: None,
+            caption: None,
+            nested_in: None,
             row: None,
             column: None,
             cell: None,
@@ -51,6 +58,24 @@ impl SourceRef {
     /// Attach an HTML table name or index.
     pub fn with_table(mut self, table: impl Into<String>) -> Self {
         self.table = Some(table.into());
+        self
+    }
+
+    /// Attach a caption (HTML table captions).
+    pub fn with_caption(mut self, caption: impl Into<String>) -> Self {
+        self.caption = Some(caption.into());
+        self
+    }
+
+    /// Attach a caption if one is present.
+    pub fn with_caption_opt(mut self, caption: Option<String>) -> Self {
+        self.caption = caption;
+        self
+    }
+
+    /// Record the parent table when this table came from a nested table.
+    pub fn with_nested_in(mut self, parent: impl Into<String>) -> Self {
+        self.nested_in = Some(parent.into());
         self
     }
 
@@ -247,12 +272,29 @@ impl Table {
     }
 }
 
+/// A table that was deliberately not selected because it failed a reader
+/// filter (currently the HTML `--min-rows`/`--min-cols` layout-table filter).
+#[derive(Debug, Clone)]
+pub struct SkippedTable {
+    /// Source location, including the `table-N` marker where available.
+    pub source: SourceRef,
+    /// 1-based table number within the source.
+    pub table: usize,
+    pub caption: Option<String>,
+    pub rows: usize,
+    pub columns: usize,
+    /// Human-readable reason, including the failing threshold.
+    pub reason: String,
+}
+
 /// A collection of tables produced by one input (workbook sheets, HTML tables,
 /// archive members).
 #[derive(Debug, Clone)]
 pub struct TableSet {
     pub source: SourceRef,
     pub tables: Vec<Table>,
+    /// Tables the reader intentionally skipped, in document order.
+    pub skipped: Vec<SkippedTable>,
 }
 
 impl TableSet {
@@ -260,6 +302,7 @@ impl TableSet {
         Self {
             source,
             tables: Vec::new(),
+            skipped: Vec::new(),
         }
     }
 
