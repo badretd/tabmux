@@ -1,0 +1,34 @@
+# Keep text files LF on every platform so fixtures and scripts behave the
+# same on Linux, macOS, and Windows. EOL-sensitive fixtures are marked below.
+* text=auto
+
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.csv text eol=lf
+*.tsv text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.html text eol=lf
+*.xml text eol=lf
+*.txt text eol=lf
+Cargo.lock text eol=lf
+
+# Binary artifacts.
+*.xlsx binary
+*.ods binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+
+# These fixtures intentionally carry CRLF or non-UTF-8 bytes. Never let Git
+# rewrite them; the CSV reader tests depend on the exact checked-in bytes.
+fixtures/quoted.csv -text
+fixtures/crlf.csv -text
+fixtures/latin1.csv -text
