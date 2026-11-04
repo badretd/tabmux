@@ -83,8 +83,16 @@ impl DiagnosticsPolicy {
             DiagnosticsLevel::None => false,
             DiagnosticsLevel::Full => true,
             DiagnosticsLevel::Summary => {
-                if is_fidelity_event(event.code) {
+                // Workbook-only fidelity events are noise when the target is a
+                // delimited file. They are shown for workbook output, with
+                // --fidelity-report, or with --verbose.
+                if is_workbook_fidelity_event(event.code) {
                     return include_fidelity;
+                }
+                // Value-affecting fidelity events (formula text loss, encoding
+                // replacement) are relevant to every write, including CSV.
+                if is_value_fidelity_event(event.code) {
+                    return scope == DiagnosticsScope::Write || include_fidelity;
                 }
                 match event.severity {
                     Severity::Error | Severity::Warning => true,
@@ -97,23 +105,37 @@ impl DiagnosticsPolicy {
     }
 }
 
-/// Source-fidelity events describe workbook features that cannot survive a
-/// conversion. They are reported when writing a workbook or on request.
-pub fn is_fidelity_event(code: &str) -> bool {
+/// Workbook-only fidelity events describe features that cannot survive a
+/// workbook conversion. They are shown only for workbook output,
+/// `--fidelity-report`, or `--verbose`.
+pub fn is_workbook_fidelity_event(code: &str) -> bool {
     matches!(
         code,
         "excel.chart_dropped"
             | "excel.style_dropped"
-            | "excel.formula_cached_value_only"
             | "excel.merged_cell_expanded"
-            | "excel.merged_cell_unsupported"
             | "excel.macro_dropped"
             | "excel.pivot_cache_dropped"
+            | "excel.pivot_values_materialized"
             | "excel.comment_dropped"
             | "excel.conditional_formatting_dropped"
             | "excel.data_validation_dropped"
             | "html.merged_cell_expanded"
     )
+}
+
+/// Value-affecting fidelity events matter even when the target is a delimited
+/// file. They are shown for every write.
+pub fn is_value_fidelity_event(code: &str) -> bool {
+    matches!(
+        code,
+        "excel.formula_cached_value_only" | "excel.formula_dropped"
+    )
+}
+
+/// Any source-fidelity event. Used for documentation and tests.
+pub fn is_fidelity_event(code: &str) -> bool {
+    is_workbook_fidelity_event(code) || is_value_fidelity_event(code)
 }
 
 #[cfg(test)]
@@ -146,6 +168,31 @@ mod tests {
             &event("output.sheet_name_sanitized", Severity::Info),
             DiagnosticsScope::Write,
             false
+        ));
+    }
+
+    #[test]
+    fn value_fidelity_events_show_for_delimited_writes() {
+        let policy = DiagnosticsPolicy::resolve(None, false, false, false, false);
+        assert!(policy.shows(
+            &event("excel.formula_cached_value_only", Severity::Info),
+            DiagnosticsScope::Write,
+            false
+        ));
+        assert!(!policy.shows(
+            &event("excel.formula_cached_value_only", Severity::Info),
+            DiagnosticsScope::ReadOnly,
+            false
+        ));
+        assert!(!policy.shows(
+            &event("excel.chart_dropped", Severity::Warning),
+            DiagnosticsScope::Write,
+            false
+        ));
+        assert!(policy.shows(
+            &event("excel.chart_dropped", Severity::Warning),
+            DiagnosticsScope::Write,
+            true
         ));
     }
 

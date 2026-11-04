@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tabmux.invalid/schemas/loss-report-v1.json",
+  "title": "tabmux loss report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "tool", "inputs", "outputs", "events", "summary"],
+  "properties": {
+    "version": { "const": 1 },
+    "tool": { "$ref": "#/$defs/tool" },
+    "inputs": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+    "outputs": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+    "events": { "type": "array", "items": { "$ref": "#/$defs/event" } },
+    "summary": { "$ref": "#/$defs/summary" }
+  },
+  "$defs": {
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "git": { "type": "string" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "format", "bytes", "sha256"],
+      "properties": {
+        "path": { "type": "string" },
+        "format": { "type": "string" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "format"],
+      "properties": {
+        "path": { "type": "string" },
+        "format": { "type": "string" },
+        "sheet": { "type": "string" },
+        "table": { "type": "string" },
+        "caption": { "type": "string" },
+        "nested_in": { "type": "string" },
+        "row": { "type": "integer", "minimum": 1 },
+        "column": { "type": "string" },
+        "cell": { "type": "string" }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "code", "message", "count"],
+      "properties": {
+        "severity": { "enum": ["info", "warning", "error"] },
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "source": { "$ref": "#/$defs/source" },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["info", "warning", "error"],
+      "properties": {
+        "info": { "type": "integer", "minimum": 0 },
+        "warning": { "type": "integer", "minimum": 0 },
+        "error": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

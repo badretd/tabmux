@@ -176,6 +176,12 @@ impl LossEvent {
         self.source = Some(source);
         self
     }
+
+    /// Set the occurrence count for an aggregated event.
+    pub fn with_count(mut self, count: u64) -> Self {
+        self.count = count.max(1);
+        self
+    }
 }
 
 /// A named column.

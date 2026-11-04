@@ -246,7 +246,7 @@ fn read_sheet(
         .map(|(name, ty)| Column::new(name, ty))
         .collect::<Vec<_>>();
 
-    for (position, formula) in formulas {
+    for (position, _formula) in formulas {
         let row = position.0;
         let column = position.1;
         let column_index = (column as usize).checked_sub(start.1 as usize + left_trimmed);
@@ -263,11 +263,7 @@ fn read_sheet(
         warnings.push(
             LossEvent::info(
                 "excel.formula_cached_value_only",
-                format!(
-                    "formula at {} (`{}`) was not recalculated; the cached value was exported",
-                    a1(row, column),
-                    formula.trim()
-                ),
+                "cached value may be stale; formula text not preserved",
             )
             .with_source(cell_source),
         );
@@ -716,7 +712,8 @@ impl PackageScan {
                         self.charts
                     ),
                 )
-                .with_source(source.clone()),
+                .with_source(source.clone())
+                .with_count(self.charts as u64),
             );
         }
         if self.styled_cells {
@@ -734,7 +731,8 @@ impl PackageScan {
                     "excel.macro_dropped",
                     "the workbook contains a VBA project; macros are never executed or copied",
                 )
-                .with_source(source.clone()),
+                .with_source(source.clone())
+                .with_count(self.macros as u64),
             );
         }
         if self.pivots > 0 {
@@ -742,9 +740,17 @@ impl PackageScan {
                 LossEvent::warning(
                     "excel.pivot_cache_dropped",
                     format!(
-                        "the workbook contains {} pivot cache part(s); pivot tables are not copied",
+                        "the workbook contains {} pivot cache definition(s); pivot definitions are not copied",
                         self.pivots
                     ),
+                )
+                .with_source(source.clone())
+                .with_count(self.pivots as u64),
+            );
+            warnings.push(
+                LossEvent::info(
+                    "excel.pivot_values_materialized",
+                    "worksheet values that fed a pivot are exported as plain cells",
                 )
                 .with_source(source.clone()),
             );
@@ -758,7 +764,8 @@ impl PackageScan {
                         self.comments
                     ),
                 )
-                .with_source(source.clone()),
+                .with_source(source.clone())
+                .with_count(self.comments as u64),
             );
         }
         if self.conditional_formatting > 0 {
@@ -770,7 +777,8 @@ impl PackageScan {
                         self.conditional_formatting
                     ),
                 )
-                .with_source(source.clone()),
+                .with_source(source.clone())
+                .with_count(self.conditional_formatting as u64),
             );
         }
         if self.data_validation > 0 {
@@ -782,7 +790,8 @@ impl PackageScan {
                         self.data_validation
                     ),
                 )
-                .with_source(source.clone()),
+                .with_source(source.clone())
+                .with_count(self.data_validation as u64),
             );
         }
 

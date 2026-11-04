@@ -408,6 +408,15 @@ here is the same as the planned 1.x line. `sha2 0.10` is a dev-dependency used
 only by the determinism test, which compares SHA-256 hashes of two replays.
 No new runtime dependency was added for pipelines.
 
+**Build note (Phase 9)**
+
+`sha2 0.10` is now a runtime dependency of the `core` feature (it remains a
+dev-dependency too for integration tests). It supplies SHA-256 checksums for
+the loss report's artifacts and the provenance manifest. `chrono` is used for
+the RFC 3339 manifest timestamp; the timestamp conversion needs only the `std`
+feature already enabled by the core build. The loss report itself contains no
+timestamps and is deterministic.
+
 ### 3.12 Scripting, templating, and plugins
 
 > **CUT.** Embedded scripting, jq, Lua, and WASM plugins are discontinued. `minijinja` may remain only for internal file/sheet-name templates, not user scripting.

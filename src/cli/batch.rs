@@ -6,6 +6,7 @@
 //! [`SafeWriter`] so a validation failure leaves no partial results.
 
 use std::path::{Component, Path, PathBuf};
+use std::time::{Instant, SystemTime};
 
 use crate::diagnostics::{DiagnosticsPolicy, DiagnosticsScope};
 use crate::error::{Error, Result};
@@ -13,8 +14,10 @@ use crate::formats::archive;
 use crate::formats::{self, FormatId, SheetSelection};
 use crate::io::SafeWriter;
 use crate::model::{LossEvent, SourceRef, Table};
+use crate::report::{self, Artifact};
 
 use super::args::ConvertArgs;
+use super::reporting::{ReportContext, output_artifact};
 use super::{
     is_workbook_output, print_dry_run, print_event, print_warnings, render_name_template,
     sanitize_sheet_name, split_output_format, stack_tables, unique_relative_path,
@@ -28,6 +31,8 @@ pub(super) fn convert_batch(
     diagnostics: &DiagnosticsPolicy,
 ) -> Result<()> {
     validate_batch_args(input, output, args)?;
+    let started = Instant::now();
+    let started_at = SystemTime::now();
 
     let selection = args.read.sheets.selection()?;
     let default_template = if selection == SheetSelection::All {
@@ -58,9 +63,33 @@ pub(super) fn convert_batch(
     )?;
 
     let mut skipped = scan.unsupported.len();
+    let mut events = Vec::<LossEvent>::new();
     for unsupported in &scan.unsupported {
-        report_unsupported(&unsupported.source, &unsupported.reason, diagnostics);
+        events.push(report_unsupported(
+            &unsupported.source,
+            &unsupported.reason,
+            diagnostics,
+        ));
     }
+
+    let input_artifacts = scan
+        .sources
+        .iter()
+        .map(|source| {
+            Artifact::from_bytes(
+                source.source.path.display().to_string(),
+                source.format,
+                &source.bytes,
+            )
+        })
+        .collect::<Vec<_>>();
+    let context = ReportContext::with_started(
+        &args.reporting,
+        input_artifacts,
+        args.write.force,
+        started,
+        started_at,
+    );
 
     let read_options = args.read.options()?;
     let mut plans = Vec::<PlannedTable>::new();
@@ -90,7 +119,7 @@ pub(super) fn convert_batch(
             {
                 Ok(set) => set,
                 Err(Error::Unsupported(message)) => {
-                    report_unsupported(&source.source, &message, diagnostics);
+                    events.push(report_unsupported(&source.source, &message, diagnostics));
                     skipped += 1;
                     continue;
                 }
@@ -175,32 +204,47 @@ pub(super) fn convert_batch(
         )));
     }
 
-    if args.strict && skipped > 0 {
-        return Err(Error::LossyBlocked(format!(
-            "batch input '{input}' contains {skipped} unsupported file(s); no output was written (remove --strict to skip them)"
-        )));
+    for plan in &mut plans {
+        report::push_null_rendering_warning(&mut plan.table, plan.format, &args.write.null);
     }
+    events.extend(
+        plans
+            .iter()
+            .flat_map(|plan| plan.table.warnings.iter().cloned()),
+    );
 
     let destinations = plans
         .iter()
         .map(|plan| batch_destination(Path::new(output), &plan.relative))
         .collect::<Result<Vec<_>>>()?;
+    let protected = destinations
+        .iter()
+        .map(|destination| ("output", destination.as_path()))
+        .collect::<Vec<_>>();
+    context.validate_paths(&protected)?;
 
     // Print every source diagnostic before any output appears. This includes
     // workbook fidelity events when the user asked for them with
     // --fidelity-report.
-    for plan in &plans {
-        print_warnings(
-            &plan.table,
+    let include_fidelity = diagnostics.fidelity_report || args.reporting.strict;
+    if context.aggregates_diagnostics(diagnostics) {
+        context.print_event_summary(
+            &events,
             diagnostics,
             DiagnosticsScope::Write,
-            diagnostics.fidelity_report,
+            include_fidelity,
         );
+    } else {
+        for plan in &plans {
+            print_warnings(
+                &plan.table,
+                diagnostics,
+                DiagnosticsScope::Write,
+                include_fidelity,
+            );
+        }
     }
-
-    for destination in &destinations {
-        SafeWriter::ensure_writable(destination, args.write.force)?;
-    }
+    context.check_strict(&events)?;
 
     if args.write.dry_run {
         for (plan, destination) in plans.iter().zip(&destinations) {
@@ -212,6 +256,8 @@ pub(super) fn convert_batch(
                 batch_summary(plans.len(), converted_inputs, skipped, true)
             );
         }
+        context.write_loss(&events, &[])?;
+        context.print_dry_run_reports(&events, diagnostics);
         return Ok(());
     }
 
@@ -225,10 +271,10 @@ pub(super) fn convert_batch(
     // in the middle of the batch drops the temporary files instead of leaving
     // a half-written result set behind.
     let mut staged = Vec::with_capacity(plans.len());
-    for (plan, destination) in plans.into_iter().zip(destinations) {
-        let mut writer = SafeWriter::create(&destination, args.write.force, args.write.backup)?;
+    for (plan, destination) in plans.iter().zip(&destinations) {
+        let mut writer = SafeWriter::create(destination, args.write.force, args.write.backup)?;
         formats::write_table(&mut writer, &plan.table, plan.format, &options)?;
-        staged.push((destination, writer));
+        staged.push((destination.clone(), writer));
     }
 
     let mut written = Vec::with_capacity(staged.len());
@@ -254,10 +300,29 @@ pub(super) fn convert_batch(
         }
     }
 
+    let mut outputs = Vec::with_capacity(plans.len());
+    for (plan, destination) in plans.iter().zip(&destinations) {
+        context.verify_file(
+            destination,
+            plan.format,
+            std::slice::from_ref(&plan.table),
+            &read_options,
+            &args.write.null,
+        )?;
+        outputs.push(output_artifact(destination, plan.format)?);
+    }
+    context.write_loss(&events, &outputs)?;
+    context.write_manifest(
+        &events,
+        &outputs,
+        batch_manifest_options(args, output_format),
+    )?;
+
     if diagnostics.enabled() {
         eprintln!(
-            "tabmux: {}",
-            batch_summary(written.len(), converted_inputs, skipped, false)
+            "tabmux: {}{}",
+            batch_summary(written.len(), converted_inputs, skipped, false),
+            context.summary_suffix(&events)
         );
     }
     Ok(())
@@ -336,12 +401,37 @@ fn batch_destination(root: &Path, relative: &Path) -> Result<PathBuf> {
     Ok(root.join(relative))
 }
 
-fn report_unsupported(source: &SourceRef, reason: &str, diagnostics: &DiagnosticsPolicy) {
+fn report_unsupported(
+    source: &SourceRef,
+    reason: &str,
+    diagnostics: &DiagnosticsPolicy,
+) -> LossEvent {
     let event =
         LossEvent::warning("format.unsupported", reason.to_owned()).with_source(source.clone());
     if diagnostics.shows(&event, DiagnosticsScope::Write, false) {
         print_event(&event);
     }
+    event
+}
+
+fn batch_manifest_options(args: &ConvertArgs, format: FormatId) -> serde_json::Value {
+    serde_json::json!({
+        "command": "convert",
+        "mode": "batch",
+        "output_format": format.label(),
+        "strict": args.reporting.strict,
+        "lossy": args.reporting.lossy,
+        "max_warnings": args.reporting.max_warnings,
+        "verify": args.reporting.verify,
+        "force": args.write.force,
+        "backup": args.write.backup,
+        "dry_run": args.write.dry_run,
+        "recursive": args.recursive,
+        "include": &args.include,
+        "exclude": &args.exclude,
+        "flatten": args.flatten,
+        "all_sheets": args.read.sheets.all_sheets,
+    })
 }
 
 fn batch_summary(outputs: usize, inputs: usize, skipped: usize, dry_run: bool) -> String {

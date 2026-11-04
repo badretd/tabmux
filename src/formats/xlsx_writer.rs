@@ -8,7 +8,7 @@
 
 use std::io::{Seek, Write};
 
-use rust_xlsxwriter::{Format, Workbook, Worksheet, XlsxError};
+use rust_xlsxwriter::{DocProperties, ExcelDateTime, Format, Workbook, Worksheet, XlsxError};
 
 use crate::error::{Error, Result};
 use crate::formats::{WriteOptions, workbook_write};
@@ -36,6 +36,10 @@ pub fn write<W: Write + Seek>(
     let sheet_names = workbook_write::normalize_sheet_names(&prepared);
 
     let mut workbook = Workbook::new();
+    // A fixed document timestamp keeps workbook output reproducible. The
+    // provenance manifest records the actual run time separately.
+    let created = ExcelDateTime::from_ymd(2000, 1, 1).map_err(xlsx_error)?;
+    workbook.set_properties(&DocProperties::new().set_creation_datetime(&created));
     let header_format = Format::new().set_bold();
     let date_format = Format::new().set_num_format(DATE_FORMAT);
     let datetime_format = Format::new().set_num_format(DATETIME_FORMAT);

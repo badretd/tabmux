@@ -1072,6 +1072,60 @@ Expected:
 - Strict mode is tested for both output and report behavior.
 - Report schema is documented and versioned.
 
+**Implementation note (2026-11-04)**
+
+- **Report flags:** `--report`, `--report-markdown`, `--manifest`, `--strict`,
+  `--lossy`, `--max-warnings`, and `--verify` are available on `convert`
+  (single, split, workbook, and batch), `merge`, and `run`. Read-only
+  inspection commands do not write reports.
+- **Schema:** the JSON report is version 1 and is documented in
+  `docs/loss-report.md` plus `docs/loss-report.schema.json`. Events aggregate
+  by `(severity, code, message)`, keep the first source reference, and record
+  occurrence counts. The summary counts occurrences by severity.
+- **Strict policy:** any `error` event fails; warning occurrences above
+  `--max-warnings` (default 0) fail. `--lossy` explicitly allows warnings and
+  conflicts with `--strict`; for `run`, `--lossy` is an alias for `--no-strict`
+  and overrides `strict = true`.
+- **Report on failure:** a strict-blocked conversion still writes the requested
+  loss report, then exits 5 before opening any data writer. The provenance
+  manifest is written only after a successful data write.
+- **Provenance:** the manifest records tool name/version/git, RFC 3339 start
+  time, duration, argv, options, input/output bytes and SHA-256, loss summary,
+  and `deterministic: true`. Stdin is omitted because it has no stable
+  checksum. The manifest itself contains a timestamp; data outputs remain
+  deterministic.
+- **Verification:** `--verify` re-reads each output and compares columns, sheet
+  names, row counts, and rendered values. File outputs are verified after
+  commit; stdout outputs are verified from the in-memory buffer.
+- **Atomicity:** `--split-sheets` now stages all outputs before committing, and
+  batch mode already did. A commit failure names the outputs already written.
+- **Post-write summary:** successful writes name the requested report and
+  manifest files, the lossy category/item counts, and the strict outcome, for
+  example `loss severity: lossy (7 categories, 8 items; --strict would exit
+  5)`. Global workbook properties are shown as `styles(dropped)`,
+  `macros(dropped)`, and `pivot_caches(dropped)` rather than `(1)`. Dry-runs
+  confirm requested report files separately and never claim a manifest.
+- **Strict whitelist:** `excel.pivot_values_materialized`, merged-cell
+  expansion, and `excel.formula_cached_value_only` are normal transformations
+  and do not fail `--strict` or count toward `--max-warnings`. They remain in
+  the report and the lossy-item counts exclude them.
+- **Report-backed stderr:** when a report is requested, summary mode prints a
+  few aggregated category lines and points at the report. `--verbose` prints
+  per-event details. Merged-cell expansion and pivot-value materialization are
+  separate info lines. The display matrix is explicit: workbook-only features
+  (chart/style/macro/pivot/comment/conditional formatting/data validation/
+  merged expansion) are hidden for CSV/TSV output; value-affecting events
+  (`formula_cached_value_only`, encoding replacement) are always shown.
+- **Formula and pivot semantics:** formula events aggregate into one entry
+  with `count = N` and the note “cached value may be stale; formula text not
+  preserved”. `excel.pivot_cache_dropped` covers lost pivot definitions;
+  `excel.pivot_values_materialized` records that worksheet values are exported
+  as plain cells. A fixture test asserts the `Pivot` sheet’s values survive.
+- **Fixtures:** `fixtures/rich.xlsx` (chart, style, formula, merged range,
+  conditional formatting, data validation, comment, pivot cache, macro),
+  `fixtures/messy.csv` (ragged rows), and
+  `fixtures/reports/sample-report.json` (golden report).
+
 ---
 
 ### Phase 10 — DuckDB export and simple query

@@ -16,6 +16,8 @@ Analytics, TUI, plugins, cloud/federation, geo/graph/ML, PII, AI, dashboards, an
 | [`features.md`](./features.md) | Feature inventory and scope: vision, CLI model, five starter scenarios, basic parity research, new-feature status, non-goals, and acceptance criteria |
 | [`analogues.md`](./analogues.md) | Competitive research: the main CLI tools for tabular data, their functionality, strengths, limitations, and the gap `tabmux` fills |
 | [`dependencies.md`](./dependencies.md) | Rust crate and external-tool plan: feature flags, dependency catalog, feature map, build/CI strategy, risks, and policy |
+| [`loss-report.md`](./loss-report.md) | Loss-report and provenance-manifest schema, strict policy, verification, and event codes |
+| [`loss-report.schema.json`](./loss-report.schema.json) | Machine-readable JSON Schema for loss-report version 1 |
 | [`implementation-notes.md`](./implementation-notes.md) | Deliberate deviations from the plan and behavior notes for shipped phases |
 
 ## The five starter scenarios

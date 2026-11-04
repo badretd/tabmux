@@ -148,9 +148,9 @@
   Text containing XML-invalid control characters is rejected with a hard error
   that includes the sheet and cell context rather than being silently dropped.
 - **Split output:** `--split-sheets` remains delimited-only; passing a `.xlsx`
-  or `.ods` destination with `--split-sheets` is a usage error. Multi-file
-  stage-then-commit atomicity is still a Phase 9 hardening item; workbook output
-  itself is a single atomic `SafeWriter` commit.
+  or `.ods` destination with `--split-sheets` is a usage error. Phase 9 added
+  multi-file stage-then-commit atomicity; workbook output itself is a single
+  atomic `SafeWriter` commit.
 
 ## Phase 5 — Merge/concat, schema diff, basic transforms
 
@@ -318,25 +318,114 @@
   two replays.
 - **Strict mode (basic):** any warning or error event fails with exit 5 before
   writing. This includes workbook fidelity warnings such as
-  `excel.chart_dropped`. `--no-strict` overrides `strict = true`. The loss-report
-  file and warning-threshold policy are Phase 9.
+  `excel.chart_dropped`. `--no-strict` overrides `strict = true`. Phase 9 adds
+  the loss-report file and the `--max-warnings` threshold on top of this basic
+  policy.
 - **No seed:** no operation is randomized, so `seed` is intentionally absent
   rather than accepted and ignored.
 - **Fixtures:** `pipeline.toml` is the replayable example; `pipeline-merge.toml`
   covers concat, `pipeline-invalid.toml` covers an unknown column, and
   `pipeline-strict.toml` covers a lossy workbook blocked by strict mode.
 
+## Phase 9 — Loss report, provenance, strict mode
+
+- **Report module:** `src/report/mod.rs` owns the versioned `LossReport` and
+  `ProvenanceManifest` documents, event aggregation, Markdown rendering, strict
+  policy, verification, and auxiliary-path validation. The JSON schema lives in
+  `docs/loss-report.schema.json`; `docs/loss-report.md` is the human reference.
+- **Aggregation:** events are grouped by `(severity, code, message)`, the first
+  source reference is retained, and `count` is the number of occurrences.
+  Records are sorted deterministically (error, warning, info; then code,
+  message, source). The summary counts occurrences, not distinct records.
+- **When reports are written:** every conversion builds a report in memory, but
+  the file is only written when `--report` or `--report-markdown` is passed.
+  A lossless CSV → CSV conversion writes an empty `events` array and a zeroed
+  summary.
+- **Strict policy:** `--strict` fails with exit code 5 when any `error` event
+  exists or when warning occurrences exceed `--max-warnings N` (default 0).
+  `--lossy` conflicts with `--strict` and is the explicit "allow warnings"
+  switch; for `run`, `--lossy` is an alias for `--no-strict` and overrides
+  `strict = true` in the manifest. Info events never fail strict mode.
+- **Report on strict failure:** a blocked conversion still writes the loss
+  report when `--report`/`--report-markdown` was requested, then exits 5 before
+  opening any data writer. This is deliberate: the report is the explanation.
+  The provenance manifest is only written after a successful data write because
+  it records output checksums.
+- **Provenance:** `--manifest PATH` writes tool name/version/git hash (embedded
+  by `build.rs` when a git checkout is available), RFC 3339 start time,
+  duration, the actual argv, resolved options, input/output byte counts and
+  SHA-256 checksums, the loss summary, and `deterministic: true`. Stdin has no
+  stable checksum and is omitted from `inputs`. The manifest itself is not
+  byte-identical across runs (timestamp/duration); data outputs are.
+- **Verification:** `--verify` re-reads every file output and every in-memory
+  stdout output, then compares column names (when a header is present), sheet
+  names for workbooks, row counts, and rendered cell values. Verification runs
+  after a file commit, so a mismatch reports the output as written but fails
+  with exit code 1.
+- **Auxiliary paths:** report, Markdown report, and manifest paths are validated
+  before writing. They may not equal each other, an input, a data output, or
+  the resolved-plan path. They respect the normal no-clobber/`--force` policy.
+- **Multi-output atomicity:** `--split-sheets` now stages every output before
+  committing any of them, matching batch mode. A commit failure names the
+  outputs already written.
+- **Workbook determinism:** the rust_xlsxwriter path now writes a fixed
+  document creation timestamp (`2000-01-01`). XLSX outputs are therefore
+  byte-identical across runs; the manifest still records the real run time
+  separately. ODS output was already deterministic.
+- **Commands:** `convert` (single, split, workbook, and batch), `merge`, and
+  `run` accept the report flags. Read-only inspection commands do not write
+  reports. `--strict` is no longer limited to batch conversion.
+- **Fixtures:** `fixtures/rich.xlsx` exercises chart, style, cached formula,
+  merged cells, conditional formatting, data validation, comment, pivot cache,
+  and macro events. `fixtures/messy.csv` covers ragged-row events and the
+  `--max-warnings` threshold. `fixtures/reports/sample-report.json` is the
+  golden report document.
+- **Event coverage:** the existing readers already emit the documented codes.
+  The report path adds no silent drops; batch `format.unsupported` events are
+  now collected into the report as well as printed to stderr. The CSV reader
+  also detects an unterminated quoted field and emits `csv.bad_quote`.
+  Delimited output emits `output.null_rendered_as_empty` (info) when native
+  null cells are written as empty text, with the occurrence count.
+- **Formula events:** every formula cell emits
+  `excel.formula_cached_value_only` with the stable message “cached value may
+  be stale; formula text not preserved”. The report aggregates them into one
+  entry with `count = N` and retains the first cell as its source.
+- **Pivot semantics:** `excel.pivot_cache_dropped` reports that pivot
+  definitions/caches were not copied. `excel.pivot_values_materialized` (info)
+  records that worksheet values are exported as plain cells. The fixture test
+  asserts the `Pivot` sheet’s values survive the round-trip.
+- **Post-write summary:** successful writes print one summary line naming the
+  requested loss report and manifest, the lossy category/item counts, and the
+  strict outcome, for example
+  `loss severity: lossy (7 categories, 8 items; --strict would exit 5)`.
+  Global workbook properties are printed as `styles(dropped)`,
+  `macros(dropped)`, and `pivot_caches(dropped)` rather than `(1)`. Dry-runs
+  confirm requested report files separately and never claim a manifest.
+- **Strict whitelist:** `excel.pivot_values_materialized`, merged-cell
+  expansion, and `excel.formula_cached_value_only` are normal transformations,
+  not strict failures. They are still reported, but they are excluded from the
+  lossy item count and from `--max-warnings`.
+- **Report-backed stderr:** when a report is requested, summary mode prints
+  aggregated category lines and points at the JSON/Markdown report instead of
+  one line per event. Merged-cell expansion and pivot-value materialization get
+  separate info lines because one is a reader transformation and the other is
+  a writer materialization. `--verbose` prints the per-event details.
+
 ## Diagnostics policy
 
 - **Default (`summary`):** read-only commands show only warnings/errors that
   affect the data being displayed. Informational events are reserved for write
   commands, and source-fidelity events are hidden.
-- **Fidelity events:** `excel.chart_dropped`, `excel.style_dropped`,
-  `excel.formula_cached_value_only` (formula recalculation),
-  `excel.merged_cell_expanded` (merge policy), and the other dropped-workbook
-  feature events are printed only when writing a workbook or when
+- **Workbook-only fidelity events:** `excel.chart_dropped`,
+  `excel.style_dropped`, `excel.macro_dropped`, pivot cache/values, comments,
+  conditional formatting, data validation, and merged-cell expansion are
+  printed only when writing a workbook, when `--strict` is active, or when
   `--fidelity-report` is passed. Writing CSV/TSV does not count as a workbook
-  save, so it stays quiet by default.
+  save, so they stay quiet by default.
+- **Value-affecting fidelity events:** `excel.formula_cached_value_only`
+  (formula text loss) is printed for every write, including CSV/TSV. Future
+  precision-loss events follow the same rule. Encoding replacement is already a
+  normal warning and is always shown.
 - **`--diagnostics summary|full|none`:** explicit detail control.
   `--quiet` maps to `none`; `--verbose` maps to `full`; `--debug` implies
   `full` and additionally restores per-row events for rows filtered out by
@@ -348,13 +437,29 @@
 - **Row numbering:** each `Table` carries `first_data_row`, the 1-based source
   row number of its first data row, so row-filtered diagnostics can be matched
   back to the source even after headers or leading blank rows are trimmed.
+- **Display matrix (summary mode):**
+  - Workbook-only fidelity events (`excel.chart_dropped`,
+    `excel.style_dropped`, `excel.macro_dropped`, pivot cache/values, comments,
+    conditional formatting, data validation, merged-cell expansion) are shown
+    only for XLSX/ODS output, with `--fidelity-report`, or with `--verbose`.
+  - Value-affecting events (`excel.formula_cached_value_only`, future precision
+    loss, `csv.encoding_replaced`) are shown for every write, including
+    CSV/TSV.
+  - Read-only commands show only warnings/errors that affect the displayed
+    rows; workbook-only events require `--fidelity-report`.
+  - `--verbose`/`--debug` shows every event.
+- **Report-backed diagnostics:** when `--report` or `--report-markdown` is
+  requested, summary mode prints a few aggregated lines and points at the
+  report instead of one line per event. `--verbose` still prints every event.
+  The post-write summary always names requested report/manifest files and the
+  loss severity (`lossless`, `approximate`, or `lossy`).
 
 ## Scope guard
 
 Everything else follows the devplan scope: CSV/TSV/JSON and XLSX/ODS
 read/write, HTML table ingestion, split/stack, row/cell inspection,
-merge/concat with basic transforms, directory/ZIP batch mode, and the
-reproducible pipeline manifest are implemented. The loss-report file, full
-provenance manifest, warning-threshold strict policy, and DuckDB export/query
-are still ahead. There is no network, and no `fs::write` in command code. All
-file outputs go through `io::SafeWriter`.
+merge/concat with basic transforms, directory/ZIP batch mode, the reproducible
+pipeline manifest, the loss report, provenance manifest, verification, and the
+warning-threshold strict policy are implemented. DuckDB export/query (Phase 10)
+and hardening/release work are still ahead. There is no network, and no
+`fs::write` in command code. All file outputs go through `io::SafeWriter`.

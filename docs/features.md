@@ -109,6 +109,10 @@ tabmux \
 | `--quiet` / `--verbose` / `--debug` | Diagnostic levels (`--quiet` = none, `--verbose` = full, `--debug` includes filtered-out row detail). |
 | `--diagnostics summary\|full\|none` | Explicit diagnostic detail policy. Read-only commands default to summary. |
 | `--fidelity-report` | Show workbook-fidelity events even when the command is read-only. |
+| `--report PATH` / `--report-markdown PATH` | Write the machine-readable or Markdown loss report. |
+| `--manifest PATH` | Write the provenance manifest with input/output checksums. |
+| `--strict` / `--lossy` / `--max-warnings N` | Strict loss policy and explicit warning allowance. |
+| `--verify` | Re-read outputs and compare values and row counts. |
 | `--color auto/always/never` | Color policy; respects `NO_COLOR`. |
 | `--memory-limit` | Soft limit before spilling to disk. |
 | `--temp-dir` | Spill directory. |

@@ -1,0 +1,4 @@
+id,name,amount,note
+1,Alice,10,ok
+2,Bob
+3,Carol,30,ok,extra

@@ -107,6 +107,16 @@ pub fn read(
         ));
     }
 
+    if has_unterminated_quote(&decoded.text) {
+        warnings.push(
+            LossEvent::warning(
+                "csv.bad_quote",
+                "the input ends inside a quoted field; the final record may be truncated or malformed",
+            )
+            .with_source(source.clone()),
+        );
+    }
+
     let delimiter = options.delimiter.unwrap_or_else(|| {
         if is_tsv {
             b'\t'
@@ -226,6 +236,33 @@ pub fn read(
         warnings,
         first_data_row: 1,
     })
+}
+
+/// Detect a quoted field that is still open at end of input.
+///
+/// This is a deliberately simple RFC 4180 balance check: doubled quotes inside
+/// a quoted field are escaped, and every other quote toggles the quoted state.
+fn has_unterminated_quote(text: &str) -> bool {
+    let mut in_quotes = false;
+    let mut chars = text.chars().peekable();
+
+    while let Some(character) = chars.next() {
+        if character != '"' {
+            continue;
+        }
+
+        if in_quotes {
+            if chars.peek() == Some(&'"') {
+                chars.next();
+            } else {
+                in_quotes = false;
+            }
+        } else {
+            in_quotes = true;
+        }
+    }
+
+    in_quotes
 }
 
 /// Score each candidate delimiter and return the most plausible one.
@@ -369,6 +406,13 @@ mod tests {
             table.rows[0][1],
             CellValue::Text("likes commas, quotes \"and\"\r\nnewlines".into())
         );
+    }
+
+    #[test]
+    fn detects_unterminated_quotes_without_flagging_escaped_quotes() {
+        assert!(has_unterminated_quote("a,b\n\"unterminated,2\n"));
+        assert!(!has_unterminated_quote("a,b\n\"quoted, value\",2\n"));
+        assert!(!has_unterminated_quote("a,b\n\"quoted \"\"value\"\"\",2\n"));
     }
 
     #[test]

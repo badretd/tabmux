@@ -30,7 +30,7 @@ pub struct RunArgs {
     #[arg(long = "no-force", conflicts_with = "force")]
     pub no_force: bool,
 
-    /// Fail before writing when the pipeline produces any warning or error.
+    /// Fail before writing when errors exist or warnings exceed --max-warnings.
     #[arg(long, conflicts_with = "no_strict")]
     pub strict: bool,
 
@@ -45,6 +45,30 @@ pub struct RunArgs {
     /// Write the resolved plan as JSON (use - for stdout).
     #[arg(long, value_name = "PATH")]
     pub save_plan: Option<String>,
+
+    /// Write the loss report as JSON.
+    #[arg(long, value_name = "PATH")]
+    pub report: Option<String>,
+
+    /// Write the loss report as Markdown.
+    #[arg(long = "report-markdown", value_name = "PATH")]
+    pub report_markdown: Option<String>,
+
+    /// Write the provenance manifest as JSON.
+    #[arg(long = "manifest", value_name = "PATH")]
+    pub manifest_path: Option<String>,
+
+    /// Allow warnings even when the manifest requests strict mode.
+    #[arg(long, conflicts_with_all = ["strict", "no_strict"])]
+    pub lossy: bool,
+
+    /// Maximum warning occurrences allowed in strict mode (default 0).
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub max_warnings: u64,
+
+    /// Re-read every output and compare values and row counts.
+    #[arg(long)]
+    pub verify: bool,
 }
 
 impl RunArgs {
@@ -60,15 +84,54 @@ impl RunArgs {
             },
             strict: if self.strict {
                 Some(true)
-            } else if self.no_strict {
+            } else if self.no_strict || self.lossy {
                 Some(false)
             } else {
                 None
             },
             backup: if self.backup { Some(true) } else { None },
             save_plan: self.save_plan.clone(),
+            report: self.report.clone(),
+            report_markdown: self.report_markdown.clone(),
+            manifest: self.manifest_path.clone(),
+            max_warnings: self.max_warnings,
+            verify: self.verify,
         }
     }
+}
+
+/// Loss report, provenance, and strict-mode options shared by conversion
+/// commands.
+#[derive(Debug, Clone, Args)]
+pub struct ReportArgs {
+    /// Write the loss report as JSON.
+    #[arg(long, value_name = "PATH")]
+    pub report: Option<String>,
+
+    /// Write the loss report as Markdown.
+    #[arg(long = "report-markdown", value_name = "PATH")]
+    pub report_markdown: Option<String>,
+
+    /// Write the provenance manifest as JSON.
+    #[arg(long, value_name = "PATH")]
+    pub manifest: Option<String>,
+
+    /// Fail before writing data outputs when errors exist or warnings exceed
+    /// --max-warnings.
+    #[arg(long, conflicts_with = "lossy")]
+    pub strict: bool,
+
+    /// Explicitly allow warnings (the default outside --strict).
+    #[arg(long, conflicts_with = "strict")]
+    pub lossy: bool,
+
+    /// Maximum warning occurrences allowed in strict mode (default 0).
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub max_warnings: u64,
+
+    /// Re-read every output and compare values and row counts.
+    #[arg(long)]
+    pub verify: bool,
 }
 
 /// Sheet/table selection shared by commands that can read workbooks.
@@ -313,9 +376,8 @@ pub struct ConvertArgs {
     #[arg(long, value_name = "RATIO", default_value_t = DEFAULT_MAX_COMPRESSION_RATIO)]
     pub max_compression_ratio: u64,
 
-    /// Fail before writing when a batch input contains unsupported files.
-    #[arg(long)]
-    pub strict: bool,
+    #[command(flatten)]
+    pub reporting: ReportArgs,
 
     /// Filename template for --split-sheets and batch output. Supports {stem},
     /// {sheet}, {format}, {ext}, and {index}.
@@ -458,6 +520,9 @@ pub struct MergeArgs {
 
     #[command(flatten)]
     pub write: WriteArgs,
+
+    #[command(flatten)]
+    pub reporting: ReportArgs,
 }
 
 /// Filter rows with a simple comparison expression.

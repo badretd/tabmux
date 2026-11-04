@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "tool": {
+    "name": "tabmux",
+    "version": "0.1.0"
+  },
+  "inputs": [
+    {
+      "path": "fixtures/rich.xlsx",
+      "format": "xlsx",
+      "bytes": 5,
+      "sha256": "c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20"
+    }
+  ],
+  "outputs": [
+    {
+      "path": "out.csv",
+      "format": "csv",
+      "bytes": 6,
+      "sha256": "e0ee8bb50685e05fa0f47ed04203ae953fdfd055f5bd2892ea186504254f8c3a"
+    }
+  ],
+  "events": [
+    {
+      "severity": "warning",
+      "code": "excel.chart_dropped",
+      "message": "the workbook contains 1 chart(s); charts are not copied",
+      "source": {
+        "path": "fixtures/rich.xlsx",
+        "format": "xlsx"
+      },
+      "count": 1
+    },
+    {
+      "severity": "info",
+      "code": "excel.merged_cell_expanded",
+      "message": "expanded A4:B4",
+      "source": {
+        "path": "fixtures/rich.xlsx",
+        "format": "xlsx",
+        "sheet": "Rich"
+      },
+      "count": 1
+    }
+  ],
+  "summary": {
+    "info": 1,
+    "warning": 1,
+    "error": 0
+  }
+}

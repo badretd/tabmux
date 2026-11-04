@@ -767,4 +767,88 @@ grep -q ',b.csv$' "$TMP_DIR/pipeline-merge.csv" \
   || fail "pipeline concat step is missing b.csv provenance"
 echo "pipeline concat step: ok"
 
+section "Phase 9: loss report, provenance, strict mode"
+
+"$BIN" convert fixtures/rich.xlsx "$TMP_DIR/rich.xlsx" --all-sheets \
+  --report "$TMP_DIR/loss.json" --report-markdown "$TMP_DIR/loss.md" \
+  --manifest "$TMP_DIR/manifest.json" --verify 2>"$TMP_DIR/rich.err"
+grep -q '"version": 1' "$TMP_DIR/loss.json" || fail "loss report has no version"
+for code in excel.chart_dropped excel.style_dropped \
+  excel.formula_cached_value_only excel.merged_cell_expanded \
+  excel.macro_dropped excel.pivot_cache_dropped excel.comment_dropped \
+  excel.conditional_formatting_dropped excel.data_validation_dropped; do
+  grep -q "$code" "$TMP_DIR/loss.json" || fail "loss report is missing $code"
+done
+grep -q '"count": 1' "$TMP_DIR/loss.json" || fail "loss report has no event counts"
+grep -q '"sha256"' "$TMP_DIR/manifest.json" || fail "manifest has no checksums"
+grep -q '"inputs"' "$TMP_DIR/manifest.json" || fail "manifest has no inputs"
+grep -q '"outputs"' "$TMP_DIR/manifest.json" || fail "manifest has no outputs"
+grep -q '"loss_summary"' "$TMP_DIR/manifest.json" || fail "manifest has no loss summary"
+grep -q 'excel.chart_dropped' "$TMP_DIR/loss.md" || fail "Markdown report is missing events"
+grep -q 'styles(dropped)' "$TMP_DIR/rich.err" \
+  || fail "global workbook properties were not shown as dropped"
+grep -q 'merged range(s) expanded' "$TMP_DIR/rich.err" \
+  || fail "merged-cell expansion was not on its own info line"
+grep -q 'pivot values materialized' "$TMP_DIR/rich.err" \
+  || fail "pivot-value materialization was not on its own info line"
+grep -q -- '--strict would exit 5' "$TMP_DIR/rich.err" \
+  || fail "summary did not state the strict outcome"
+grep -q 'loss report: .* (7 categories)' "$TMP_DIR/rich.err" \
+  || fail "summary did not confirm the report and category count"
+grep -q "manifest: $TMP_DIR/manifest.json" "$TMP_DIR/rich.err" \
+  || fail "summary did not confirm the manifest"
+echo "rich workbook report and manifest: ok"
+
+"$BIN" convert fixtures/basic.csv "$TMP_DIR/lossless.csv" \
+  --report "$TMP_DIR/lossless.json" >/dev/null 2>&1
+grep -q '"events": \[\]' "$TMP_DIR/lossless.json" \
+  || fail "lossless conversion did not produce an empty report"
+grep -q '"warning": 0' "$TMP_DIR/lossless.json" \
+  || fail "lossless conversion summary was not zero"
+echo "lossless report: ok"
+
+set +e
+"$BIN" convert fixtures/rich.xlsx "$TMP_DIR/rich-strict.xlsx" --all-sheets \
+  --report "$TMP_DIR/loss-strict.json" --strict \
+  >/dev/null 2>"$TMP_DIR/rich-strict.err"
+rich_strict_status=$?
+set -e
+[[ "$rich_strict_status" -eq 5 ]] \
+  || fail "strict rich conversion exited $rich_strict_status, expected 5"
+[[ ! -e "$TMP_DIR/rich-strict.xlsx" ]] \
+  || fail "strict rich conversion wrote an output"
+grep -q 'excel.chart_dropped' "$TMP_DIR/loss-strict.json" \
+  || fail "strict failure did not write the loss report"
+grep -q 'no output was written' "$TMP_DIR/rich-strict.err" \
+  || fail "strict failure did not explain that nothing was written"
+echo "strict mode blocks output and writes the report: ok"
+
+"$BIN" convert fixtures/messy.csv "$TMP_DIR/messy.csv" --ragged pad \
+  --strict --max-warnings 2 --report "$TMP_DIR/messy.json" >/dev/null 2>&1
+grep -q 'csv.ragged_row' "$TMP_DIR/messy.json" \
+  || fail "ragged rows were not reported"
+set +e
+"$BIN" convert fixtures/messy.csv "$TMP_DIR/messy-strict.csv" --ragged pad \
+  --strict --max-warnings 1 >/dev/null 2>"$TMP_DIR/messy-strict.err"
+messy_status=$?
+set -e
+[[ "$messy_status" -eq 5 ]] \
+  || fail "strict --max-warnings 1 exited $messy_status, expected 5"
+[[ ! -e "$TMP_DIR/messy-strict.csv" ]] \
+  || fail "strict --max-warnings failure wrote an output"
+grep -q -- '--max-warnings 1' "$TMP_DIR/messy-strict.err" \
+  || fail "strict warning-threshold error did not name the limit"
+echo "warning threshold: ok"
+
+"$BIN" run "$PIPELINE" --report "$TMP_DIR/pipeline-loss.json" \
+  --manifest "$TMP_DIR/pipeline-manifest.json" --verify \
+  >/dev/null 2>"$TMP_DIR/pipeline-report.err"
+grep -q '"events"' "$TMP_DIR/pipeline-loss.json" \
+  || fail "pipeline loss report has no events array"
+grep -q '"outputs"' "$TMP_DIR/pipeline-manifest.json" \
+  || fail "pipeline manifest has no outputs"
+grep -q '"deterministic": true' "$TMP_DIR/pipeline-manifest.json" \
+  || fail "pipeline manifest is not marked deterministic"
+echo "pipeline report and manifest: ok"
+
 printf '\nsmoke: all checks passed\n'

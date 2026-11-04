@@ -9,15 +9,19 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Instant, SystemTime};
 
 use serde::Serialize;
 
+use crate::cli::args::ReportArgs;
+use crate::cli::reporting::ReportContext;
 use crate::diagnostics::{DiagnosticsPolicy, DiagnosticsScope};
 use crate::error::{Error, Result};
 use crate::formats::{self, FormatId};
 use crate::io::SafeWriter;
-use crate::model::{LossEvent, Severity, SourceRef, Table};
+use crate::model::{LossEvent, SourceRef, Table};
 use crate::ops::{dedupe, filter, merge, rename, select, sort};
+use crate::report::{self, Artifact, LossReport, strict_violation, validate_auxiliary_paths};
 
 use super::manifest::{
     InputSpec, Manifest, MergeModeSpec, Op, OutputSpec, SheetSpec, Step, output_format_from_path,
@@ -32,6 +36,11 @@ pub struct RunSettings {
     pub strict: Option<bool>,
     pub backup: Option<bool>,
     pub save_plan: Option<String>,
+    pub report: Option<String>,
+    pub report_markdown: Option<String>,
+    pub manifest: Option<String>,
+    pub max_warnings: u64,
+    pub verify: bool,
 }
 
 /// Resolved global options for one execution.
@@ -251,33 +260,75 @@ pub fn run(
     settings: &RunSettings,
     diagnostics: &DiagnosticsPolicy,
 ) -> Result<()> {
-    let execution = execute(manifest, manifest_path, settings)?;
+    let started = Instant::now();
+    let started_at = SystemTime::now();
+    let mut execution = execute(manifest, manifest_path, settings)?;
+    let inputs = input_artifacts(manifest)?;
+    for output in &mut execution.outputs {
+        report::push_null_rendering_warning(&mut output.table, output.format, "");
+    }
+    execution.warnings = collect_warnings(&execution.outputs);
+    let events = execution.warnings.clone();
     let include_fidelity = execution
         .outputs
         .iter()
         .any(|output| is_workbook_output(output.format))
         || diagnostics.fidelity_report
         || execution.options.strict;
+    let report_args = ReportArgs {
+        report: settings.report.clone(),
+        report_markdown: settings.report_markdown.clone(),
+        manifest: settings.manifest.clone(),
+        strict: execution.options.strict,
+        lossy: false,
+        max_warnings: settings.max_warnings,
+        verify: settings.verify,
+    };
+    let context = ReportContext::with_started(
+        &report_args,
+        inputs.clone(),
+        execution.options.force,
+        started,
+        started_at,
+    );
 
     if diagnostics.enabled() {
-        for event in &execution.warnings {
-            if diagnostics.shows(event, DiagnosticsScope::Write, include_fidelity) {
-                crate::cli::print_event(event);
+        if context.aggregates_diagnostics(diagnostics) {
+            context.print_event_summary(
+                &events,
+                diagnostics,
+                DiagnosticsScope::Write,
+                include_fidelity,
+            );
+        } else {
+            for event in &execution.warnings {
+                if diagnostics.shows(event, DiagnosticsScope::Write, include_fidelity) {
+                    crate::cli::print_event(event);
+                }
             }
         }
     }
 
-    if execution.options.strict {
-        let failures = execution
-            .warnings
-            .iter()
-            .filter(|event| matches!(event.severity, Severity::Warning | Severity::Error))
-            .count();
-        if failures > 0 {
-            return Err(Error::LossyBlocked(format!(
-                "pipeline produced {failures} warning/error event(s); no output was written (use --no-strict or set strict = false to allow them)"
-            )));
+    validate_report_paths(
+        manifest,
+        &execution.outputs,
+        settings,
+        execution.options.force,
+    )?;
+
+    if execution.options.strict
+        && let Some(reason) = strict_violation(&events, settings.max_warnings)
+    {
+        write_loss_report(settings, &inputs, &[], &events, execution.options.force)?;
+        let mut message = format!(
+            "pipeline produced {reason}; no output was written (use --no-strict, --lossy, or set strict = false to allow them)"
+        );
+        if let Some(path) = &settings.report {
+            message.push_str(&format!("; loss report: {path}"));
+        } else if let Some(path) = &settings.report_markdown {
+            message.push_str(&format!("; loss report: {path}"));
         }
+        return Err(Error::LossyBlocked(message));
     }
 
     if let Some(path) = &settings.save_plan {
@@ -287,6 +338,8 @@ pub fn run(
 
     if settings.dry_run {
         print_dry_run(&execution, diagnostics);
+        write_loss_report(settings, &inputs, &[], &events, execution.options.force)?;
+        context.print_dry_run_reports(&events, diagnostics);
         if let Some(path) = &settings.save_plan {
             write_plan(&execution.plan, path, execution.options.force)?;
         }
@@ -351,9 +404,25 @@ pub fn run(
         }
     }
 
+    let outputs = output_artifacts(&execution.outputs, stdout.as_deref())?;
+    if settings.verify {
+        verify_outputs(&execution.outputs, stdout.as_deref())?;
+    }
+
     if let Some(buffer) = stdout {
         crate::io::write_stdout(&buffer)?;
     }
+
+    write_loss_report(
+        settings,
+        &inputs,
+        &outputs,
+        &events,
+        execution.options.force,
+    )?;
+    write_manifest(
+        settings, &execution, started, started_at, &inputs, &outputs, &events,
+    )?;
 
     if diagnostics.enabled() {
         let paths = execution
@@ -363,11 +432,178 @@ pub fn run(
             .collect::<Vec<_>>()
             .join(", ");
         eprintln!(
-            "tabmux: wrote {} output(s): {paths}",
-            execution.outputs.len()
+            "tabmux: wrote {} output(s): {paths}{}",
+            execution.outputs.len(),
+            context.summary_suffix(&events)
         );
     }
 
+    Ok(())
+}
+
+fn input_artifacts(manifest: &Manifest) -> Result<Vec<Artifact>> {
+    let mut artifacts = Vec::new();
+    for input in &manifest.inputs {
+        if input.path == "-" {
+            continue;
+        }
+        let format = match &input.format {
+            Some(name) => parse_input_format(name)?,
+            None => formats::detect_path(Path::new(&input.path)).unwrap_or(FormatId::Unknown),
+        };
+        artifacts.push(Artifact::from_file_as(Path::new(&input.path), format)?);
+    }
+    Ok(artifacts)
+}
+
+fn output_artifacts(outputs: &[ResolvedOutput], stdout: Option<&[u8]>) -> Result<Vec<Artifact>> {
+    let mut artifacts = Vec::new();
+    for output in outputs {
+        if output.spec.path == "-" {
+            let buffer = stdout.ok_or_else(|| {
+                Error::data("pipeline stdout output was not buffered before reporting")
+            })?;
+            artifacts.push(Artifact::from_bytes("-", output.format, buffer));
+        } else {
+            artifacts.push(Artifact::from_file_as(
+                Path::new(&output.spec.path),
+                output.format,
+            )?);
+        }
+    }
+    Ok(artifacts)
+}
+
+fn verify_outputs(outputs: &[ResolvedOutput], stdout: Option<&[u8]>) -> Result<()> {
+    for output in outputs {
+        let read_options = formats::ReadOptions {
+            has_header: output.spec.header.unwrap_or(true),
+            ..formats::ReadOptions::default()
+        };
+        if output.spec.path == "-" {
+            let buffer = stdout.ok_or_else(|| {
+                Error::data("pipeline stdout output was not buffered before verification")
+            })?;
+            report::verify_bytes(
+                "stdout",
+                output.format,
+                std::slice::from_ref(&output.table),
+                &read_options,
+                buffer,
+                "",
+            )?;
+        } else {
+            report::verify_output(
+                Path::new(&output.spec.path),
+                output.format,
+                std::slice::from_ref(&output.table),
+                &read_options,
+                "",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn auxiliary_paths(settings: &RunSettings) -> Vec<(&'static str, &Path)> {
+    let mut paths = Vec::new();
+    if let Some(path) = &settings.report {
+        paths.push(("loss report", Path::new(path)));
+    }
+    if let Some(path) = &settings.report_markdown {
+        paths.push(("markdown loss report", Path::new(path)));
+    }
+    if let Some(path) = &settings.manifest {
+        paths.push(("provenance manifest", Path::new(path)));
+    }
+    paths
+}
+
+fn validate_report_paths(
+    manifest: &Manifest,
+    outputs: &[ResolvedOutput],
+    settings: &RunSettings,
+    force: bool,
+) -> Result<()> {
+    let auxiliary = auxiliary_paths(settings);
+    if auxiliary.is_empty() {
+        return Ok(());
+    }
+
+    let mut protected = Vec::new();
+    for input in &manifest.inputs {
+        if input.path != "-" {
+            protected.push(("input", Path::new(&input.path)));
+        }
+    }
+    for output in outputs {
+        if output.spec.path != "-" {
+            protected.push(("output", Path::new(&output.spec.path)));
+        }
+    }
+    if let Some(path) = &settings.save_plan
+        && path != "-"
+    {
+        protected.push(("resolved plan", Path::new(path)));
+    }
+
+    validate_auxiliary_paths(&auxiliary, &protected, force)
+}
+
+fn write_loss_report(
+    settings: &RunSettings,
+    inputs: &[Artifact],
+    outputs: &[Artifact],
+    events: &[LossEvent],
+    force: bool,
+) -> Result<()> {
+    if settings.report.is_none() && settings.report_markdown.is_none() {
+        return Ok(());
+    }
+    let report = LossReport::build(inputs.to_vec(), outputs.to_vec(), events);
+    report::write_loss_reports(
+        &report,
+        settings.report.as_deref(),
+        settings.report_markdown.as_deref(),
+        force,
+    )
+}
+
+fn write_manifest(
+    settings: &RunSettings,
+    execution: &Execution,
+    started: Instant,
+    started_at: SystemTime,
+    inputs: &[Artifact],
+    outputs: &[Artifact],
+    events: &[LossEvent],
+) -> Result<()> {
+    let Some(path) = &settings.manifest else {
+        return Ok(());
+    };
+    let options = serde_json::json!({
+        "command": "run",
+        "manifest": execution.plan.manifest,
+        "dry_run": execution.plan.dry_run,
+        "strict": execution.options.strict,
+        "force": execution.options.force,
+        "backup": execution.options.backup,
+        "max_warnings": settings.max_warnings,
+        "verify": settings.verify,
+    });
+    report::write_manifest(
+        path,
+        started_at,
+        started.elapsed(),
+        std::env::args_os()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect(),
+        options,
+        inputs,
+        outputs,
+        events,
+        execution.options.force,
+    )?;
     Ok(())
 }
 

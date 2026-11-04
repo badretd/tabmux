@@ -2,6 +2,7 @@
 
 pub mod args;
 mod batch;
+pub(crate) mod reporting;
 mod run;
 
 use std::collections::HashSet;
@@ -16,11 +17,13 @@ use crate::formats::{self, FormatId};
 use crate::io::SafeWriter;
 use crate::model::{CellValue, Column, ColumnType, LossEvent, SourceRef, Table, TableSet};
 use crate::ops::{dedupe, filter, merge, rename, schema, select, sort};
+use crate::report::{self, Artifact};
 
 use self::args::{
     CellArgs, ConvertArgs, CountArgs, DedupeArgs, DiagnosticsArgs, FilterArgs, HeadArgs, MergeArgs,
     MergeModeArg, ReadArgs, RenameArgs, RowArgs, RunArgs, SelectArgs, SheetsArgs, SortArgs,
 };
+use self::reporting::{ReportContext, input_artifacts, output_artifact, table_events};
 
 /// Top-level command-line interface.
 #[derive(Debug, Parser)]
@@ -111,11 +114,6 @@ fn convert(args: ConvertArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
         return batch::convert_batch(&inputs[0], &output, &args, &diagnostics);
     }
 
-    if args.strict {
-        return Err(Error::usage(
-            "--strict is only supported for directory and ZIP batch conversion in this phase",
-        ));
-    }
     if args.recursive || args.flatten || !args.include.is_empty() || !args.exclude.is_empty() {
         return Err(Error::usage(
             "--recursive, --include, --exclude, and --flatten require a directory or ZIP batch input",
@@ -240,12 +238,24 @@ fn convert_delimited(
     }
 
     let (mut tables, input_format) = load_tables(input, &args.read)?;
+    let context = ReportContext::new(
+        &args.reporting,
+        input_artifacts(&[input.to_owned()])?,
+        args.write.force,
+    );
 
     if args.split_sheets {
-        return write_split(&mut tables, Path::new(output), args, input, diagnostics);
+        return write_split(
+            &mut tables,
+            Path::new(output),
+            args,
+            input,
+            diagnostics,
+            context,
+        );
     }
 
-    let table = if args.stack {
+    let mut table = if args.stack {
         stack_tables(
             std::mem::take(&mut tables.tables),
             args.add_source_column.as_deref(),
@@ -254,38 +264,112 @@ fn convert_delimited(
         tables.into_single()?
     };
     let output_format = delimited_output_format(input_format, output, requested_format)?;
-    let include_fidelity = diagnostics.fidelity_report || is_workbook_output(output_format);
-    print_warnings(
-        &table,
-        diagnostics,
-        DiagnosticsScope::Write,
-        include_fidelity,
-    );
+    report::push_null_rendering_warning(&mut table, output_format, &args.write.null);
+    let events = table_events(std::slice::from_ref(&table));
+    let protected = if output == "-" {
+        Vec::new()
+    } else {
+        vec![("output", Path::new(output))]
+    };
+    context.validate_paths(&protected)?;
+
+    let include_fidelity =
+        diagnostics.fidelity_report || is_workbook_output(output_format) || args.reporting.strict;
+    if context.aggregates_diagnostics(diagnostics) {
+        context.print_event_summary(
+            &events,
+            diagnostics,
+            DiagnosticsScope::Write,
+            include_fidelity,
+        );
+    } else {
+        print_warnings(
+            &table,
+            diagnostics,
+            DiagnosticsScope::Write,
+            include_fidelity,
+        );
+    }
+    context.check_strict(&events)?;
 
     let mut options = formats::WriteOptions::for_format(output_format);
     options.has_header = !args.read.no_header;
     options.line_ending = args.write.line_ending;
     options.null = args.write.null.clone();
+    let read_options = args.read.options()?;
 
     if output == "-" {
         if args.write.dry_run {
             print_dry_run("stdout", &table, output_format);
+            context.write_loss(&events, &[])?;
+            context.print_dry_run_reports(&events, diagnostics);
             return Ok(());
         }
         let mut buffer = Vec::new();
         formats::write_table(&mut buffer, &table, output_format, &options)?;
-        return crate::io::write_stdout(&buffer);
+        context.verify_bytes(
+            "stdout",
+            output_format,
+            std::slice::from_ref(&table),
+            &read_options,
+            &buffer,
+            &args.write.null,
+        )?;
+        let outputs = vec![Artifact::from_bytes("-", output_format, &buffer)];
+        crate::io::write_stdout(&buffer)?;
+        context.write_loss(&events, &outputs)?;
+        context.write_manifest(
+            &events,
+            &outputs,
+            convert_manifest_options(args, output_format),
+        )?;
+        if diagnostics.enabled() {
+            eprintln!(
+                "tabmux: wrote 1 table ({} rows x {} columns) to stdout{}",
+                table.row_count(),
+                table.width(),
+                context.summary_suffix(&events)
+            );
+        }
+        return Ok(());
     }
 
     let destination = Path::new(output);
     if args.write.dry_run {
         print_dry_run(output, &table, output_format);
+        context.write_loss(&events, &[])?;
+        context.print_dry_run_reports(&events, diagnostics);
         return Ok(());
     }
 
     let mut writer = SafeWriter::create(destination, args.write.force, args.write.backup)?;
     formats::write_table(&mut writer, &table, output_format, &options)?;
-    writer.commit()
+    writer.commit()?;
+
+    let outputs = vec![output_artifact(destination, output_format)?];
+    context.verify_file(
+        destination,
+        output_format,
+        std::slice::from_ref(&table),
+        &read_options,
+        &args.write.null,
+    )?;
+    context.write_loss(&events, &outputs)?;
+    context.write_manifest(
+        &events,
+        &outputs,
+        convert_manifest_options(args, output_format),
+    )?;
+    if diagnostics.enabled() {
+        eprintln!(
+            "tabmux: wrote 1 table ({} rows x {} columns) to {}{}",
+            table.row_count(),
+            table.width(),
+            destination.display(),
+            context.summary_suffix(&events)
+        );
+    }
+    Ok(())
 }
 
 #[cfg(feature = "excel")]
@@ -331,10 +415,19 @@ fn convert_workbook(
         tables.insert(0, index);
     }
 
+    let context = ReportContext::new(&args.reporting, input_artifacts(inputs)?, args.write.force);
+    context.validate_paths(&[("output", Path::new(output))])?;
+    let events = table_events(&tables);
+
     // Writing a workbook always includes source-fidelity events.
-    for table in &tables {
-        print_warnings(table, diagnostics, DiagnosticsScope::Write, true);
+    if context.aggregates_diagnostics(diagnostics) {
+        context.print_event_summary(&events, diagnostics, DiagnosticsScope::Write, true);
+    } else {
+        for table in &tables {
+            print_warnings(table, diagnostics, DiagnosticsScope::Write, true);
+        }
     }
+    context.check_strict(&events)?;
 
     if args.write.dry_run {
         eprintln!(
@@ -356,6 +449,8 @@ fn convert_workbook(
                 workbook_summary(&tables, &skipped, true)
             );
         }
+        context.write_loss(&events, &[])?;
+        context.print_dry_run_reports(&events, diagnostics);
         return Ok(());
     }
 
@@ -364,12 +459,28 @@ fn convert_workbook(
     options.line_ending = args.write.line_ending;
     options.null = args.write.null.clone();
 
-    let mut writer = SafeWriter::create(Path::new(output), args.write.force, args.write.backup)?;
+    let destination = Path::new(output);
+    let mut writer = SafeWriter::create(destination, args.write.force, args.write.backup)?;
     formats::write_tables(writer.file_mut(), &tables, format, &options)?;
     writer.commit()?;
 
+    let outputs = vec![output_artifact(destination, format)?];
+    context.verify_file(
+        destination,
+        format,
+        &tables,
+        &args.read.options()?,
+        &args.write.null,
+    )?;
+    context.write_loss(&events, &outputs)?;
+    context.write_manifest(&events, &outputs, convert_manifest_options(args, format))?;
+
     if diagnostics.enabled() {
-        eprintln!("tabmux: {}", workbook_summary(&tables, &skipped, false));
+        eprintln!(
+            "tabmux: {}{}",
+            workbook_summary(&tables, &skipped, false),
+            context.summary_suffix(&events)
+        );
     }
     Ok(())
 }
@@ -622,6 +733,7 @@ fn write_split(
     args: &ConvertArgs,
     input: &str,
     diagnostics: &DiagnosticsPolicy,
+    context: ReportContext,
 ) -> Result<()> {
     if tables.tables.is_empty() {
         return Err(Error::data("no tables were selected to write"));
@@ -670,21 +782,26 @@ fn write_split(
         plans.push((index, output.join(relative)));
     }
 
-    for (_, destination) in &plans {
-        SafeWriter::ensure_writable(destination, args.write.force)?;
+    let protected = plans
+        .iter()
+        .map(|(_, destination)| ("output", destination.as_path()))
+        .collect::<Vec<_>>();
+    context.validate_paths(&protected)?;
+
+    for table in &mut tables.tables {
+        report::push_null_rendering_warning(table, format, &args.write.null);
     }
-
-    let mut options = formats::WriteOptions::for_format(format);
-    options.has_header = !args.read.no_header;
-    options.line_ending = args.write.line_ending;
-    options.null = args.write.null.clone();
-    let include_fidelity = diagnostics.fidelity_report || is_workbook_output(format);
-
-    if args.write.dry_run {
-        for (index, destination) in &plans {
-            let table = &tables.tables[*index];
-            print_dry_run(&destination.display().to_string(), table, format);
-        }
+    let events = table_events(&tables.tables);
+    let include_fidelity =
+        diagnostics.fidelity_report || is_workbook_output(format) || args.reporting.strict;
+    if context.aggregates_diagnostics(diagnostics) {
+        context.print_event_summary(
+            &events,
+            diagnostics,
+            DiagnosticsScope::Write,
+            include_fidelity,
+        );
+    } else {
         for table in &tables.tables {
             print_warnings(
                 table,
@@ -693,22 +810,83 @@ fn write_split(
                 include_fidelity,
             );
         }
+    }
+    context.check_strict(&events)?;
+
+    let mut options = formats::WriteOptions::for_format(format);
+    options.has_header = !args.read.no_header;
+    options.line_ending = args.write.line_ending;
+    options.null = args.write.null.clone();
+    let read_options = args.read.options()?;
+
+    if args.write.dry_run {
+        for (index, destination) in &plans {
+            let table = &tables.tables[*index];
+            print_dry_run(&destination.display().to_string(), table, format);
+        }
+        context.write_loss(&events, &[])?;
+        context.print_dry_run_reports(&events, diagnostics);
         return Ok(());
     }
 
+    // Stage every output before committing any of them. A failure while writing
+    // one file drops the other staged files instead of leaving a partial set.
+    let mut staged = Vec::with_capacity(plans.len());
     for (index, destination) in &plans {
         let table = &tables.tables[*index];
         let mut writer = SafeWriter::create(destination, args.write.force, args.write.backup)?;
         formats::write_table(&mut writer, table, format, &options)?;
-        writer.commit()?;
+        staged.push((destination.clone(), writer));
     }
 
-    for table in &tables.tables {
-        print_warnings(
-            table,
-            diagnostics,
-            DiagnosticsScope::Write,
-            include_fidelity,
+    let mut written = Vec::with_capacity(staged.len());
+    for (destination, writer) in staged {
+        match writer.commit() {
+            Ok(()) => written.push(destination),
+            Err(error) => {
+                let completed = written
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let completed = if completed.is_empty() {
+                    "none".to_owned()
+                } else {
+                    completed
+                };
+                return Err(Error::Partial(format!(
+                    "split commit failed for '{}': {error}; committed outputs: {completed}",
+                    destination.display()
+                )));
+            }
+        }
+    }
+
+    let mut outputs = Vec::with_capacity(plans.len());
+    for (index, destination) in &plans {
+        let table = &tables.tables[*index];
+        context.verify_file(
+            destination,
+            format,
+            std::slice::from_ref(table),
+            &read_options,
+            &args.write.null,
+        )?;
+        outputs.push(output_artifact(destination, format)?);
+    }
+    context.write_loss(&events, &outputs)?;
+    context.write_manifest(&events, &outputs, convert_manifest_options(args, format))?;
+    if diagnostics.enabled() {
+        let paths = written
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "tabmux: wrote {} output(s): {}{}",
+            written.len(),
+            paths,
+            context.summary_suffix(&events)
         );
     }
     Ok(())
@@ -1073,7 +1251,7 @@ fn merge_tables(args: MergeArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
         .first()
         .map(|table| table.source.format)
         .unwrap_or(FormatId::Csv);
-    let merged = merge::merge(
+    let mut merged = merge::merge(
         tables,
         &merge::MergeOptions {
             source_column: args.add_source_column.clone(),
@@ -1081,13 +1259,6 @@ fn merge_tables(args: MergeArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
             case_insensitive_headers: args.case_insensitive_headers,
         },
     )?;
-
-    print_warnings(
-        &merged,
-        &diagnostics,
-        DiagnosticsScope::Write,
-        diagnostics.fidelity_report,
-    );
 
     let output_format = if args.output == "-" {
         match first_format {
@@ -1098,24 +1269,86 @@ fn merge_tables(args: MergeArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
         detect_supported_output(&args.output)?
     };
 
+    let context = ReportContext::new(
+        &args.reporting,
+        input_artifacts(&args.inputs)?,
+        args.write.force,
+    );
+    report::push_null_rendering_warning(&mut merged, output_format, &args.write.null);
+    let events = table_events(std::slice::from_ref(&merged));
+    let protected = if args.output == "-" {
+        Vec::new()
+    } else {
+        vec![("output", Path::new(&args.output))]
+    };
+    context.validate_paths(&protected)?;
+
+    let include_fidelity =
+        diagnostics.fidelity_report || is_workbook_output(output_format) || args.reporting.strict;
+    if context.aggregates_diagnostics(&diagnostics) {
+        context.print_event_summary(
+            &events,
+            &diagnostics,
+            DiagnosticsScope::Write,
+            include_fidelity,
+        );
+    } else {
+        print_warnings(
+            &merged,
+            &diagnostics,
+            DiagnosticsScope::Write,
+            include_fidelity,
+        );
+    }
+    context.check_strict(&events)?;
+
     let mut options = formats::WriteOptions::for_format(output_format);
     options.has_header = !args.read.no_header;
     options.line_ending = args.write.line_ending;
     options.null = args.write.null.clone();
+    let read_options = args.read.options()?;
 
     if args.output == "-" {
         if args.write.dry_run {
             print_dry_run("stdout", &merged, output_format);
+            context.write_loss(&events, &[])?;
+            context.print_dry_run_reports(&events, &diagnostics);
             return Ok(());
         }
         let mut buffer = Vec::new();
         formats::write_table(&mut buffer, &merged, output_format, &options)?;
-        return crate::io::write_stdout(&buffer);
+        context.verify_bytes(
+            "stdout",
+            output_format,
+            std::slice::from_ref(&merged),
+            &read_options,
+            &buffer,
+            &args.write.null,
+        )?;
+        let outputs = vec![Artifact::from_bytes("-", output_format, &buffer)];
+        crate::io::write_stdout(&buffer)?;
+        context.write_loss(&events, &outputs)?;
+        context.write_manifest(
+            &events,
+            &outputs,
+            merge_manifest_options(&args, output_format),
+        )?;
+        if diagnostics.enabled() {
+            eprintln!(
+                "tabmux: wrote 1 table ({} rows x {} columns) to stdout{}",
+                merged.row_count(),
+                merged.width(),
+                context.summary_suffix(&events)
+            );
+        }
+        return Ok(());
     }
 
     let destination = Path::new(&args.output);
     if args.write.dry_run {
         print_dry_run(&args.output, &merged, output_format);
+        context.write_loss(&events, &[])?;
+        context.print_dry_run_reports(&events, &diagnostics);
         return Ok(());
     }
 
@@ -1130,7 +1363,32 @@ fn merge_tables(args: MergeArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
     } else {
         formats::write_table(&mut writer, &merged, output_format, &options)?;
     }
-    writer.commit()
+    writer.commit()?;
+
+    let outputs = vec![output_artifact(destination, output_format)?];
+    context.verify_file(
+        destination,
+        output_format,
+        std::slice::from_ref(&merged),
+        &read_options,
+        &args.write.null,
+    )?;
+    context.write_loss(&events, &outputs)?;
+    context.write_manifest(
+        &events,
+        &outputs,
+        merge_manifest_options(&args, output_format),
+    )?;
+    if diagnostics.enabled() {
+        eprintln!(
+            "tabmux: wrote 1 table ({} rows x {} columns) to {}{}",
+            merged.row_count(),
+            merged.width(),
+            destination.display(),
+            context.summary_suffix(&events)
+        );
+    }
+    Ok(())
 }
 
 fn filter_rows(args: FilterArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
@@ -1555,6 +1813,47 @@ fn print_dry_run(destination: &str, table: &Table, format: FormatId) {
         table.width(),
         format.label()
     );
+}
+
+fn convert_manifest_options(args: &ConvertArgs, format: FormatId) -> serde_json::Value {
+    serde_json::json!({
+        "command": "convert",
+        "output_format": format.label(),
+        "strict": args.reporting.strict,
+        "lossy": args.reporting.lossy,
+        "max_warnings": args.reporting.max_warnings,
+        "verify": args.reporting.verify,
+        "force": args.write.force,
+        "backup": args.write.backup,
+        "dry_run": args.write.dry_run,
+        "no_header": args.read.no_header,
+        "split_sheets": args.split_sheets,
+        "stack": args.stack,
+        "all_sheets": args.read.sheets.all_sheets,
+        "sheet": args.read.sheets.sheet.as_deref(),
+        "sheet_index": args.read.sheets.sheet_index,
+        "tables": args.read.sheets.tables.as_deref(),
+    })
+}
+
+fn merge_manifest_options(args: &MergeArgs, format: FormatId) -> serde_json::Value {
+    serde_json::json!({
+        "command": "merge",
+        "output_format": format.label(),
+        "mode": match args.mode {
+            MergeModeArg::Strict => "strict",
+            MergeModeArg::Loose => "loose",
+        },
+        "strict": args.reporting.strict,
+        "lossy": args.reporting.lossy,
+        "max_warnings": args.reporting.max_warnings,
+        "verify": args.reporting.verify,
+        "force": args.write.force,
+        "backup": args.write.backup,
+        "dry_run": args.write.dry_run,
+        "dedup": args.dedup,
+        "add_source_column": args.add_source_column.as_deref(),
+    })
 }
 
 fn reject_self_overwrite(inputs: &[String], output: &str) -> Result<()> {

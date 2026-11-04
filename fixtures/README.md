@@ -27,6 +27,8 @@ demand by a script in a later phase.
 | `d.csv` | Same header order as `a.csv` with a text value in the numeric `amount` column for type-conflict diffs |
 | `typed.csv` | Int, float, bool, date, datetime, time, and a leading-zero text code for native-type workbook tests |
 | `nulls.csv` | Empty cells that must round-trip as nulls through XLSX/ODS |
+| `messy.csv` | One short and one long row for `csv.ragged_row` loss-report and strict-threshold tests |
+| `badquote.csv` | An unterminated quoted field for the `csv.bad_quote` loss event |
 
 ## Document fixtures
 
@@ -41,6 +43,7 @@ demand by a script in a later phase.
 |---|---|
 | `sales.xlsx` | Three sheets (`Sales`, `Regions`, `Notes`), native dates, a merged range, a cached formula, a styled header, and a chart part. Regenerate with `python3 scripts/make-sales-xlsx.py`. |
 | `sales.ods` | Two sheets (`Sales`, `Regions`), native dates, a merged range, a cached formula, and a styled header. Regenerate with `python3 scripts/make-sales-ods.py`. |
+| `rich.xlsx` | Two sheets (`Rich`, `Pivot`) with a chart, cell styles, cached formulas, a merged range, conditional formatting, data validation, a comment, a pivot cache, and a VBA project. Used for loss-report and strict-mode tests. Regenerate with `python3 scripts/make-rich-xlsx.py`. |
 
 ## Batch fixtures
 
@@ -62,6 +65,12 @@ The three ZIP fixtures are regenerated deterministically with
 | `pipeline-merge.toml` | `concat` step over `a.csv` and `b.csv` with loose schema matching and a provenance column. |
 | `pipeline-invalid.toml` | Valid manifest that references an unknown column; must fail before writing. |
 | `pipeline-strict.toml` | Strict-mode pipeline over the lossy `sales.xlsx`; must exit 5 before writing. |
+
+## Report fixtures
+
+| Fixture | Purpose |
+|---|---|
+| `reports/sample-report.json` | Golden loss-report document for the report serializer. The test compares the version, artifacts, events, and summary, and ignores the tool block. |
 
 ## Adding fixtures
 

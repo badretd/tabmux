@@ -11,6 +11,7 @@ pub mod io;
 pub mod model;
 pub mod ops;
 pub mod pipeline;
+pub mod report;
 
 use std::process::ExitCode;
 

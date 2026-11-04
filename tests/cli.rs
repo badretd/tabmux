@@ -476,10 +476,14 @@ fn xlsx_sheet_converts_to_csv_with_dates_and_cached_values() {
     let error = stderr(&output);
     assert!(
         !error.contains("excel.merged_cell_expanded"),
-        "default convert should not print fidelity events:\n{error}"
+        "default CSV convert should not print workbook-only fidelity events:\n{error}"
     );
     assert!(!error.contains("excel.chart_dropped"));
     assert!(!error.contains("excel.style_dropped"));
+    assert!(
+        error.contains("excel.formula_cached_value_only"),
+        "CSV convert must still report formula text loss:\n{error}"
+    );
 
     let fidelity_destination = dir.path().join("sales-fidelity.csv");
     let output = tabmux()
