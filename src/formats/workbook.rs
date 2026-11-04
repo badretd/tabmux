@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Read as _};
 
-use calamine::{Data, Dimensions, ExcelDateTime, Range, Reader as _, Sheets};
+use calamine::{Data, Dimensions, ExcelDateTime, Range, Reader as _, SheetVisible, Sheets};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use quick_xml::Reader as XmlReader;
 use quick_xml::events::Event;
@@ -57,13 +57,30 @@ pub fn read(
     }
 
     let indices = select_sheets(source, &available, &options.sheets)?;
+    let visibility = workbook
+        .sheets_metadata()
+        .iter()
+        .map(|sheet| sheet.visible)
+        .collect::<Vec<_>>();
     let scan = PackageScan::scan(bytes, format);
 
     let mut set = TableSet::new(source.clone());
     for index in indices {
         let name = available[index].clone();
         let merges = merge_ranges(&mut workbook, format, &name, &scan.ods_merges);
-        let table = read_sheet(&mut workbook, source, &name, options.has_header, merges)?;
+        let mut table = read_sheet(&mut workbook, source, &name, options.has_header, merges)?;
+        if visibility
+            .get(index)
+            .is_some_and(|visibility| *visibility != SheetVisible::Visible)
+        {
+            table.push_warning(
+                LossEvent::info(
+                    "excel.hidden_sheet_read",
+                    "hidden or very-hidden source sheet(s) were exported like visible sheets",
+                )
+                .with_source(table.source.clone()),
+            );
+        }
         set.push(table);
     }
 

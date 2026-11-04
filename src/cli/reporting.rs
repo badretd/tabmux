@@ -386,6 +386,8 @@ fn event_label(code: &str) -> String {
         "format.unsupported" => "unsupported_files",
         "output.sheet_name_sanitized" => "sanitized_names",
         "output.null_rendered_as_empty" => "null_cells",
+        "output.formula_injection" => "formula_injection",
+        "excel.hidden_sheet_read" => "hidden_sheets",
         other => return other.to_owned(),
     }
     .to_owned()

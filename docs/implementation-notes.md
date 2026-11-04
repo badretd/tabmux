@@ -467,6 +467,46 @@
   feature is absent; `TABMUX_FEATURES=sql-duckdb ./scripts/smoke.sh` runs the
   full import/query/guard sequence.
 
+## Phase 11 — Hardening, fixtures, conformance
+
+- **Messy-source corpus:** the checked-in fixtures now cover empty CSV,
+  formula-like CSV text, hidden/very-hidden/empty workbook sheets, case-only
+  sheet-name collisions, a 20-table HTML stress document, malformed HTML, and a
+  malformed ZIP. Regeneration scripts live in `scripts/` and are referenced
+  from `fixtures/README.md`.
+- **Empty tables:** an empty CSV file (or an empty worksheet) now writes a
+  truly empty file. The CSV writer previously emitted a stray `""\n` record for
+  a zero-column table. `--verify` and `count` still treat the result as a
+  zero-row, zero-column table.
+- **Formula injection:** CSV/TSV output emits the warning
+  `output.formula_injection` when text begins with `=`, `+`, `@`, tab, carriage
+  return, or a `-` that is not a number. Ordinary negative numbers are not
+  flagged. The writer never rewrites cells implicitly; `--strict` can block the
+  export and the report names the first risky cell. Workbook output stores the
+  same text as a string and does not emit the event. The event is documented in
+  `docs/loss-report.md` and is included in strict-mode counting.
+- **Hidden sheets:** hidden and very-hidden sheets are readable and exported
+  like visible sheets. Each selected hidden sheet emits the informational
+  `excel.hidden_sheet_read` event so the behavior is not silent. The `sheets`
+  command output is unchanged (one name per line).
+- **Property tests:** `proptest` was not present in the offline registry, so
+  `tests/properties.rs` uses a deterministic xorshift generator. It covers
+  CSV round-trips across comma/tab/semicolon delimiters and LF/CRLF line
+  endings, empty-table output, and conservative/idempotent text type inference.
+- **Fuzz targets:** `fuzz/` is a separate nightly-only `cargo-fuzz` package for
+  CSV, XLSX, and HTML readers. It is intentionally outside the root package and
+  non-blocking in CI; the contract is “error, never panic.”
+- **Performance smoke:** `scripts/perf-smoke.sh` is separate from the normal
+  smoke suite. It measures a 100 MB CSV select/filter and a 100k x 20 XLSX
+  write/read against documented budgets in `docs/performance.md`. Small
+  workloads can be selected with `TABMUX_PERF_*` environment variables.
+- **CI:** the workflow now runs fmt, clippy (all targets/features), tests on
+  Linux/macOS/Windows, the default and all-feature test suites, the manual XLSX
+  fallback, both smoke variants, a feature matrix
+  (`core`, `core,excel`, `core,html`, `core,sql-duckdb`, `default`, `full`),
+  `cargo deny`, and `cargo audit`. `deny.toml` allows only permissive licenses
+  and rejects wildcard dependencies and unknown sources.
+
 ## Diagnostics policy
 
 - **Default (`summary`):** read-only commands show only warnings/errors that
@@ -517,7 +557,9 @@ read/write, HTML table ingestion, split/stack, row/cell inspection,
 merge/concat with basic transforms, directory/ZIP batch mode, the reproducible
 pipeline manifest, the loss report, provenance manifest, verification, the
 warning-threshold strict policy, and the feature-gated SQL export/query surface
-are implemented. Hardening and release packaging (Phases 11–12) are still
-ahead. There is no network, and no `fs::write` in command code. Table file
+are implemented, along with the Phase 11 hardening corpus, property tests,
+non-blocking fuzz targets, performance budgets, and the expanded CI matrix.
+Release packaging (Phase 12) is still ahead. There is no network, and no
+`fs::write` in command code. Table file
 outputs go through `io::SafeWriter`; the SQL database is written by its engine
 inside a transaction (see the Phase 10 note).

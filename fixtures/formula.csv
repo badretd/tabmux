@@ -1,0 +1,7 @@
+id,note
+1,=SUM(A1:A2)
+2,+cmd|' /C calc'!A0
+3,@user
+4,-120
+5,safe text
+6,-1+2

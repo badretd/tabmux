@@ -936,4 +936,88 @@ else
   echo "DuckDB import, query, join, and read-only guard: ok"
 fi
 
+section "Phase 11: hardening fixtures and security edges"
+
+"$BIN" convert fixtures/empty.csv "$TMP_DIR/empty.csv" >/dev/null 2>&1
+[[ ! -s "$TMP_DIR/empty.csv" ]] \
+  || fail "empty CSV conversion wrote stray bytes"
+[[ "$("$BIN" count "$TMP_DIR/empty.csv")" == "0" ]] \
+  || fail "empty CSV output did not read back as zero rows"
+
+"$BIN" convert fixtures/formula.csv "$TMP_DIR/formula.csv" \
+  --report "$TMP_DIR/formula.json" >/dev/null 2>"$TMP_DIR/formula.err"
+grep -q 'output.formula_injection' "$TMP_DIR/formula.json" \
+  || fail "formula-like cells were not reported"
+grep -q '"count": 4' "$TMP_DIR/formula.json" \
+  || fail "formula injection count was not four"
+grep -q -- '--strict would exit 5' "$TMP_DIR/formula.err" \
+  || fail "formula injection did not affect the strict outcome"
+
+set +e
+"$BIN" convert fixtures/formula.csv "$TMP_DIR/formula-strict.csv" --strict \
+  >/dev/null 2>"$TMP_DIR/formula-strict.err"
+formula_strict_status=$?
+set -e
+[[ "$formula_strict_status" -eq 5 ]] \
+  || fail "strict formula conversion exited $formula_strict_status, expected 5"
+[[ ! -e "$TMP_DIR/formula-strict.csv" ]] \
+  || fail "strict formula conversion wrote an output"
+
+"$BIN" convert fixtures/formula.csv "$TMP_DIR/formula.xlsx" >/dev/null 2>&1
+"$BIN" convert "$TMP_DIR/formula.xlsx" - 2>/dev/null >"$TMP_DIR/formula-back.csv"
+grep -q '=SUM(A1:A2)' "$TMP_DIR/formula-back.csv" \
+  || fail "workbook output did not preserve formula-like text"
+echo "formula injection: ok"
+
+"$BIN" convert fixtures/hidden.xlsx "$TMP_DIR/hidden/" --all-sheets \
+  --split-sheets --report "$TMP_DIR/hidden.json" >/dev/null 2>&1
+[[ "$(find "$TMP_DIR/hidden" -type f | wc -l | tr -d ' ')" == "6" ]] \
+  || fail "hidden workbook did not write six sheet outputs"
+[[ -f "$TMP_DIR/hidden/hidden.DATA-2.csv" ]] \
+  || fail "case-insensitive sheet collision did not get a stable suffix"
+[[ ! -s "$TMP_DIR/hidden/hidden.Empty.csv" ]] \
+  || fail "empty sheet wrote stray bytes"
+grep -q 'excel.hidden_sheet_read' "$TMP_DIR/hidden.json" \
+  || fail "hidden sheets were not reported"
+grep -q '"count": 2' "$TMP_DIR/hidden.json" \
+  || fail "hidden-sheet report count was not two"
+echo "hidden/empty workbook sheets: ok"
+
+"$BIN" convert fixtures/twenty-tables.html "$TMP_DIR/twenty.xlsx" \
+  --tables all --sheet-per-table --use-captions --index-sheet --verify \
+  >/dev/null 2>"$TMP_DIR/twenty.err"
+[[ "$("$BIN" sheets "$TMP_DIR/twenty.xlsx" | wc -l | tr -d ' ')" == "21" ]] \
+  || fail "twenty-table workbook did not have 21 sheets"
+"$BIN" sheets "$TMP_DIR/twenty.xlsx" >"$TMP_DIR/twenty-sheets.txt"
+grep -qx 'Sales' "$TMP_DIR/twenty-sheets.txt" \
+  || fail "twenty-table workbook lost the first Sales caption"
+grep -qx 'Sales-2' "$TMP_DIR/twenty-sheets.txt" \
+  || fail "twenty-table workbook did not deduplicate the Sales caption"
+grep -q 'html.header_colspan_expanded' "$TMP_DIR/twenty.err" \
+  || fail "twenty-table workbook did not report colspan headers"
+grep -q 'html.table_skipped' "$TMP_DIR/twenty.err" \
+  || fail "twenty-table workbook did not skip the layout table"
+echo "twenty-table HTML stress: ok"
+
+"$BIN" convert fixtures/malformed.html "$TMP_DIR/malformed.xlsx" \
+  --tables all --sheet-per-table --use-captions \
+  >/dev/null 2>"$TMP_DIR/malformed-html.err"
+[[ "$("$BIN" sheets "$TMP_DIR/malformed.xlsx")" == "Broken & Free" ]] \
+  || fail "malformed HTML did not produce the expected table"
+grep -q 'html.table_skipped' "$TMP_DIR/malformed-html.err" \
+  || fail "malformed HTML did not report the skipped table"
+
+set +e
+"$BIN" convert fixtures/malformed.zip "$TMP_DIR/malformed-out/" \
+  >/dev/null 2>"$TMP_DIR/malformed-zip.err"
+malformed_zip_status=$?
+set -e
+[[ "$malformed_zip_status" -eq 1 ]] \
+  || fail "malformed ZIP exited $malformed_zip_status, expected 1"
+grep -q 'invalid Zip archive' "$TMP_DIR/malformed-zip.err" \
+  || fail "malformed ZIP did not report the archive error"
+[[ ! -e "$TMP_DIR/malformed-out" ]] \
+  || fail "malformed ZIP created an output directory"
+echo "malformed HTML/ZIP: ok"
+
 printf '\nsmoke: all checks passed\n'

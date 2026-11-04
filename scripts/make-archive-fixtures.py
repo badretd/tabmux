@@ -63,6 +63,12 @@ def main() -> None:
         ],
     )
 
+    # Deliberately not a ZIP archive. The batch reader must fail with a clear
+    # error instead of panicking or creating an output directory.
+    (FIXTURES / "malformed.zip").write_bytes(
+        b"PK\x03\x04this is not a valid zip central directory\n"
+    )
+
 
 if __name__ == "__main__":
     main()

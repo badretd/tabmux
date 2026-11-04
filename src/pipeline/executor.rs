@@ -265,7 +265,7 @@ pub fn run(
     let mut execution = execute(manifest, manifest_path, settings)?;
     let inputs = input_artifacts(manifest)?;
     for output in &mut execution.outputs {
-        report::push_null_rendering_warning(&mut output.table, output.format, "");
+        report::push_delimited_output_warnings(&mut output.table, output.format, "");
     }
     execution.warnings = collect_warnings(&execution.outputs);
     let events = execution.warnings.clone();

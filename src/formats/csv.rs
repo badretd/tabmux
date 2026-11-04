@@ -321,7 +321,7 @@ pub fn write<W: Write>(output: W, table: &Table, options: &WriteOptions) -> Resu
         .terminator(terminator)
         .from_writer(output);
 
-    if options.has_header {
+    if options.has_header && !table.columns.is_empty() {
         let headers = table
             .columns
             .iter()
@@ -334,6 +334,12 @@ pub fn write<W: Write>(output: W, table: &Table, options: &WriteOptions) -> Resu
 
     let width = table.width();
     for (index, row) in table.rows.iter().enumerate() {
+        // An empty table (an empty file or an empty workbook sheet) has no
+        // columns and no records. Writing an empty record would produce a
+        // stray `""` line, so skip it and emit a truly empty file.
+        if width == 0 && row.is_empty() {
+            continue;
+        }
         if row.len() > width {
             return Err(Error::data(format!(
                 "{}: row {} has {} cells but the table has {width} columns",
@@ -491,6 +497,18 @@ mod tests {
         let mut output = Vec::new();
         write(&mut output, &table, &options).unwrap();
         assert_eq!(output, b"a,b\r\nx,NULL\r\n");
+    }
+
+    #[test]
+    fn empty_tables_write_no_records() {
+        let table = Table::with_columns("empty", source(), Vec::new(), Vec::new());
+        let mut output = Vec::new();
+        write(&mut output, &table, &WriteOptions::new(b',')).unwrap();
+        assert!(output.is_empty(), "empty table wrote {output:?}");
+
+        let reparsed = read_bytes(&output, &ReadOptions::default());
+        assert_eq!(reparsed.width(), 0);
+        assert_eq!(reparsed.row_count(), 0);
     }
 
     #[test]

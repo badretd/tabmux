@@ -395,7 +395,7 @@ fn convert_delimited(
         tables.into_single()?
     };
     let output_format = delimited_output_format(input_format, output, requested_format)?;
-    report::push_null_rendering_warning(&mut table, output_format, &args.write.null);
+    report::push_delimited_output_warnings(&mut table, output_format, &args.write.null);
     let events = table_events(std::slice::from_ref(&table));
     let protected = if output == "-" {
         Vec::new()
@@ -920,7 +920,7 @@ fn write_split(
     context.validate_paths(&protected)?;
 
     for table in &mut tables.tables {
-        report::push_null_rendering_warning(table, format, &args.write.null);
+        report::push_delimited_output_warnings(table, format, &args.write.null);
     }
     let events = table_events(&tables.tables);
     let include_fidelity =
@@ -1405,7 +1405,7 @@ fn merge_tables(args: MergeArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
         input_artifacts(&args.inputs)?,
         args.write.force,
     );
-    report::push_null_rendering_warning(&mut merged, output_format, &args.write.null);
+    report::push_delimited_output_warnings(&mut merged, output_format, &args.write.null);
     let events = table_events(std::slice::from_ref(&merged));
     let protected = if args.output == "-" {
         Vec::new()

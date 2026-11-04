@@ -29,6 +29,8 @@ demand by a script in a later phase.
 | `nulls.csv` | Empty cells that must round-trip as nulls through XLSX/ODS |
 | `messy.csv` | One short and one long row for `csv.ragged_row` loss-report and strict-threshold tests |
 | `badquote.csv` | An unterminated quoted field for the `csv.bad_quote` loss event |
+| `empty.csv` | Zero-byte input; must convert to a truly empty output without a stray `""` record |
+| `formula.csv` | Cells beginning with `=`, `+`, `@`, and a formula-like `-` prefix for `output.formula_injection`; `-120` must stay an ordinary number |
 | `regions.csv` | Region lookup table used with `sales.xlsx` for SQL import, aggregation, and join tests |
 
 ## Document fixtures
@@ -37,6 +39,8 @@ demand by a script in a later phase.
 |---|---|
 | `tables.html` | Four `<table>` elements: `Sales` (header `colspan`, data `rowspan`, `tfoot`), `Regions` (contains a nested `Notes` table), and a one-row layout table that must be skipped. Used for HTML → workbook, index-sheet, stack, and merge-policy tests. |
 | `header-row.html` | A title row followed by an unmarked header row; used to test `--header-row` and first-row header inference. |
+| `twenty-tables.html` | 20 data tables plus one layout table. Two tables share the caption `Sales`, every fifth table has a `colspan` header, and captions contain `/` so sheet naming, collision suffixes, and sanitization are exercised. Regenerate with `python3 scripts/make-twenty-tables.py`. |
+| `malformed.html` | Unclosed tags, an unclosed paragraph, and a one-row table; the parser must stay tolerant and report the skipped table instead of panicking. |
 
 ## Workbook fixtures
 
@@ -45,6 +49,7 @@ demand by a script in a later phase.
 | `sales.xlsx` | Three sheets (`Sales`, `Regions`, `Notes`), native dates, a merged range, a cached formula, a styled header, and a chart part. Regenerate with `python3 scripts/make-sales-xlsx.py`. |
 | `sales.ods` | Two sheets (`Sales`, `Regions`), native dates, a merged range, a cached formula, and a styled header. Regenerate with `python3 scripts/make-sales-ods.py`. |
 | `rich.xlsx` | Two sheets (`Rich`, `Pivot`) with a chart, cell styles, cached formulas, a merged range, conditional formatting, data validation, a comment, a pivot cache, and a VBA project. Used for loss-report and strict-mode tests. Regenerate with `python3 scripts/make-rich-xlsx.py`. |
+| `hidden.xlsx` | Six sheets: visible, hidden, very-hidden, two case-insensitive name collisions (`Data`/`DATA`), and an empty sheet. Used for hidden-sheet reporting, stable collision suffixes, and empty-sheet output. Regenerate with `python3 scripts/make-hidden-xlsx.py`. |
 
 ## Batch fixtures
 
@@ -54,6 +59,7 @@ demand by a script in a later phase.
 | `archive.zip` | The same mix as `batch/` in a ZIP container, including a nested member and an unsupported `notes.txt` member. |
 | `traversal.zip` | Contains `../escape.csv`; must be rejected before any output is written. |
 | `bomb.zip` | A 2 MiB highly compressible member; must trip the default compression-ratio limit. |
+| `malformed.zip` | Bytes that start with a ZIP signature but are not a valid archive; must fail with a clear error and no output directory. |
 
 The three ZIP fixtures are regenerated deterministically with
 `python3 scripts/make-archive-fixtures.py`.

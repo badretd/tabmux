@@ -205,7 +205,7 @@ pub(super) fn convert_batch(
     }
 
     for plan in &mut plans {
-        report::push_null_rendering_warning(&mut plan.table, plan.format, &args.write.null);
+        report::push_delimited_output_warnings(&mut plan.table, plan.format, &args.write.null);
     }
     events.extend(
         plans

@@ -153,6 +153,7 @@ The stable code list is maintained in the development plan. Common codes:
 | `excel.comment_dropped` | Comments were not copied |
 | `excel.conditional_formatting_dropped` | Conditional formatting was not copied |
 | `excel.data_validation_dropped` | Data validation was not copied |
+| `excel.hidden_sheet_read` | A hidden or very-hidden sheet was exported like a visible sheet |
 | `html.table_skipped` | A layout table was skipped |
 | `html.merged_cell_expanded` | A colspan/rowspan cell was expanded |
 | `html.header_inferred` | The header row was inferred |
@@ -165,3 +166,12 @@ The stable code list is maintained in the development plan. Common codes:
 | `format.unsupported` | A file or format is unsupported |
 | `output.sheet_name_sanitized` | An output sheet/file name changed |
 | `output.null_rendered_as_empty` | A null was rendered as empty text |
+| `output.formula_injection` | A CSV/TSV text cell begins with a spreadsheet formula prefix and may execute when opened |
+
+`output.formula_injection` is a warning. It reports cells beginning with `=`,
+`+`, `@`, tab, carriage return, or a `-` that is not an ordinary negative
+number (so `-120` is not flagged). The writer does not rewrite the value:
+prefixing an apostrophe changes the exported bytes, so the decision stays with
+the user. Use `--strict` to block such an export, or sanitize the source first.
+Workbook output writes these cells as text and does not emit the event.
+

@@ -17,7 +17,7 @@ use sha2::{Digest as _, Sha256};
 use crate::error::{Error, Result};
 use crate::formats::{self, FormatId, ReadOptions, SheetSelection};
 use crate::io::SafeWriter;
-use crate::model::{LossEvent, Severity, SourceRef, Table};
+use crate::model::{CellValue, LossEvent, Severity, SourceRef, Table};
 
 /// Version of the loss report document.
 pub const REPORT_VERSION: u32 = 1;
@@ -289,6 +289,82 @@ pub fn null_rendering_events(
 pub fn push_null_rendering_warning(table: &mut Table, format: FormatId, null_text: &str) {
     let events = null_rendering_events(&[table], format, null_text);
     table.warnings.extend(events);
+}
+
+/// Returns true when a text cell could be interpreted as a formula by a
+/// spreadsheet application opening a delimited export.
+///
+/// Ordinary negative numbers (`-120`, `-1.5`, `-1e3`) are deliberately not
+/// flagged: they are numbers, not formulas. Anything else that begins with a
+/// spreadsheet formula prefix is reported so the user can review it before
+/// opening the file.
+fn has_formula_prefix(text: &str) -> bool {
+    match text.chars().next() {
+        Some('=' | '+' | '@' | '\t' | '\r') => true,
+        Some('-') => text.parse::<f64>().is_err(),
+        _ => false,
+    }
+}
+
+/// Report text cells that a spreadsheet application may execute as formulas
+/// when opening a CSV/TSV export.
+///
+/// The event is a warning rather than an automatic rewrite: prefixing cells
+/// changes the exported bytes, so that decision stays with the caller. The
+/// event names the first risky cell; `count` records every occurrence.
+pub fn formula_injection_events(tables: &[&Table], format: FormatId) -> Vec<LossEvent> {
+    if !matches!(format, FormatId::Csv | FormatId::Tsv) {
+        return Vec::new();
+    }
+
+    let mut count = 0u64;
+    let mut source = None;
+    for table in tables {
+        for (row_index, row) in table.rows.iter().enumerate() {
+            for (column_index, cell) in row.iter().enumerate() {
+                let CellValue::Text(text) = cell else {
+                    continue;
+                };
+                if !has_formula_prefix(text) {
+                    continue;
+                }
+                count = count.saturating_add(1);
+                if source.is_none() {
+                    let mut cell_source = table
+                        .source
+                        .clone()
+                        .with_row(table.first_data_row.saturating_add(row_index as u64));
+                    if let Some(column) = table.columns.get(column_index) {
+                        cell_source = cell_source.with_column(column.name.clone());
+                    }
+                    source = Some(cell_source);
+                }
+            }
+        }
+    }
+
+    let Some(source) = source else {
+        return Vec::new();
+    };
+
+    vec![
+        LossEvent::warning(
+            "output.formula_injection",
+            format!(
+                "{count} text cell(s) begin with a spreadsheet formula prefix (=, +, -, @, tab, or carriage return) and may be executed when the output is opened in a spreadsheet application; review or sanitize the data before opening it"
+            ),
+        )
+        .with_source(source)
+        .with_count(count),
+    ]
+}
+
+/// Append the warnings that apply to a delimited output: null rendering and
+/// formula-injection risk.
+pub fn push_delimited_output_warnings(table: &mut Table, format: FormatId, null_text: &str) {
+    let formula_events = formula_injection_events(&[&*table], format);
+    push_null_rendering_warning(table, format, null_text);
+    table.warnings.extend(formula_events);
 }
 
 /// Categories that describe normal, non-lossy transformations and therefore do

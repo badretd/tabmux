@@ -19,6 +19,7 @@ Analytics, TUI, plugins, cloud/federation, geo/graph/ML, PII, AI, dashboards, an
 | [`loss-report.md`](./loss-report.md) | Loss-report and provenance-manifest schema, strict policy, verification, and event codes |
 | [`loss-report.schema.json`](./loss-report.schema.json) | Machine-readable JSON Schema for loss-report version 1 |
 | [`implementation-notes.md`](./implementation-notes.md) | Deliberate deviations from the plan and behavior notes for shipped phases |
+| [`performance.md`](./performance.md) | Phase 11 performance smoke budgets for large CSV and XLSX workloads |
 
 ## The five starter scenarios
 

@@ -769,6 +769,14 @@ cargo audit
 
 `--all-features` is heavy because of bundled DuckDB. Run it in a separate, cached job; do not block every PR on it.
 
+**Shipped in Phase 11:** `.github/workflows/ci.yml` runs fmt, clippy, default
+and all-feature tests on Linux, default tests on macOS and Windows, a feature
+matrix (`core`, `core,excel`, `core,html`, `core,sql-duckdb`, `default`,
+`full`), `cargo deny`, and `cargo audit`. `deny.toml` is the license/source
+policy. Nightly fuzz targets live in the separate `fuzz/` package and are
+non-blocking. In this offline build `sql-duckdb` is backed by bundled SQLite;
+replace that backend before enabling the heavy DuckDB job described above.
+
 ### 7.3 Release artifacts
 
 - Linux: `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`.
