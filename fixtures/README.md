@@ -42,6 +42,18 @@ demand by a script in a later phase.
 | `sales.xlsx` | Three sheets (`Sales`, `Regions`, `Notes`), native dates, a merged range, a cached formula, a styled header, and a chart part. Regenerate with `python3 scripts/make-sales-xlsx.py`. |
 | `sales.ods` | Two sheets (`Sales`, `Regions`), native dates, a merged range, a cached formula, and a styled header. Regenerate with `python3 scripts/make-sales-ods.py`. |
 
+## Batch fixtures
+
+| Fixture | Purpose |
+|---|---|
+| `batch/` | Five files for directory traversal: `sales.csv`, `book.xlsx`, `page.html`, `notes.txt`, and `nested/regions.csv`. Used for recursive discovery, include/exclude filtering, relative-path preservation, flattening, dry-run, and strict mode. |
+| `archive.zip` | The same mix as `batch/` in a ZIP container, including a nested member and an unsupported `notes.txt` member. |
+| `traversal.zip` | Contains `../escape.csv`; must be rejected before any output is written. |
+| `bomb.zip` | A 2 MiB highly compressible member; must trip the default compression-ratio limit. |
+
+The three ZIP fixtures are regenerated deterministically with
+`python3 scripts/make-archive-fixtures.py`.
+
 ## Adding fixtures
 
 1. Keep files tiny unless the phase explicitly calls for a stress fixture.

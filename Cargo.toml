@@ -8,8 +8,19 @@ description = "Safe, reproducible conversion of messy tabular sources into clean
 
 [features]
 default = ["core", "excel", "html", "rust_xlsxwriter"]
-core = ["dep:clap", "dep:csv", "dep:encoding_rs", "dep:serde_json", "dep:tempfile", "dep:thiserror", "dep:chrono"]
-excel = ["dep:calamine", "dep:zip", "dep:quick-xml"]
+core = [
+    "dep:clap",
+    "dep:csv",
+    "dep:encoding_rs",
+    "dep:globset",
+    "dep:serde_json",
+    "dep:tempfile",
+    "dep:thiserror",
+    "dep:chrono",
+    "dep:walkdir",
+    "dep:zip",
+]
+excel = ["dep:calamine", "dep:quick-xml"]
 # HTML table extraction uses the built-in tolerant parser, so the feature has no
 # external dependency and stays cheap enough to include in the default build.
 html = []
@@ -22,9 +33,11 @@ chrono = { version = "0.4", default-features = false, features = ["std"], option
 clap = { version = "=4.5.60", features = ["derive", "env", "cargo", "unicode", "string"], optional = true }
 csv = { version = "1.4", optional = true }
 encoding_rs = { version = "0.8", optional = true }
+globset = { version = "0.4", optional = true }
 serde_json = { version = "1.0", features = ["preserve_order"], optional = true }
 tempfile = { version = "3.27", optional = true }
 thiserror = { version = "2.0", optional = true }
+walkdir = { version = "2.5", optional = true }
 
 # Spreadsheet reading. Pinned to the version available in the offline registry;
 # the API used here is the same as the planned 0.38 line.

@@ -31,8 +31,8 @@
 
 | Feature | What it enables | Main crates | Approx. build weight |
 |---|---|---|---|
-| `core` *(default)* | CSV/TSV, JSON/JSONL, inspection, select/head/count, safe writes, loss report, pipeline, compression (gzip/zstd/ZIP), terminal output | clap, csv, serde, serde_json, toml, comfy-table, indicatif, tempfile, blake3 | Small |
-| `excel` | XLS/XLSX/XLSB/ODS read; XLSX/ODS write; multi-sheet; basic formatting | calamine, rust_xlsxwriter, spreadsheet-ods, zip, quick-xml | Medium |
+| `core` *(default)* | CSV/TSV, JSON/JSONL, inspection, select/head/count, safe writes, directory/ZIP batch ingestion, loss report, pipeline, ZIP container support, terminal output | clap, csv, serde, serde_json, toml, comfy-table, indicatif, tempfile, blake3, globset, walkdir, zip | Small |
+| `excel` | XLS/XLSX/XLSB/ODS read; XLSX/ODS write; multi-sheet; basic formatting | calamine, rust_xlsxwriter, spreadsheet-ods, quick-xml | Medium |
 | `html` | HTML table extraction, HTML table inventory | built-in parser (no external crate) | Small |
 | `sql-duckdb` | DuckDB export and read-only query | duckdb, arrow | **Large** (bundled C++) |
 | `full` | All v1 features | `core` + `excel` + `html` + `sql-duckdb` | Medium–large |
@@ -381,7 +381,7 @@ table model, or loss-event contract.
 | `xz2` | `0.1` | — | xz/lzma | CUT |
 | `lz4_flex` | `0.14` | `frame` | LZ4 | CUT |
 | `snap` | `1.1` | — | Snappy | CUT |
-| `zip` | `9.3` | `deflate`, `zstd`, `time` | ZIP/XLSX/ODS | core / excel |
+| `zip` | `9.3` | `deflate`, `zstd`, `time` | ZIP batch input and OOXML/ODS containers | core |
 | `tar` | `0.4` | — | TAR archives | DEFERRED (optional read) |
 | `sevenz-rust` | `0.6` | — | 7z archives | CUT |
 | `walkdir` | `2.5` | — | Recursive ingestion | core |
@@ -391,6 +391,14 @@ table model, or loss-event contract.
 | `fs4` | `1.1` | — | File locks, single-writer safety | core |
 | `atomicwrites` | `0.4` | — | Atomic file replacement | core |
 | `filetime` | `0.2` | — | Preserve timestamps on copy | core (optional) |
+
+**Build note (Phase 7)**
+
+`walkdir` and `globset` are enabled by the `core` feature. `zip` moved from
+the `excel` feature to `core` because directory/ZIP batch ingestion is part of
+the conversion core. The batch reader enforces entry-count, total-uncompressed
+size, and compression-ratio limits and rejects absolute paths, `..` components,
+and Windows-style separators before writing anything.
 
 ### 3.12 Scripting, templating, and plugins
 

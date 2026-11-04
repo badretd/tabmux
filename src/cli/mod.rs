@@ -1,6 +1,7 @@
 //! Command-line definitions and dispatch.
 
 pub mod args;
+mod batch;
 
 use std::collections::HashSet;
 use std::io::{self, Write as _};
@@ -101,6 +102,21 @@ fn print_matrix() -> Result<()> {
 fn convert(args: ConvertArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
     let (inputs, output) = args.resolve()?;
     reject_self_overwrite(&inputs, &output)?;
+
+    if inputs.len() == 1 && formats::archive::is_batch_input(Path::new(&inputs[0])) {
+        return batch::convert_batch(&inputs[0], &output, &args, &diagnostics);
+    }
+
+    if args.strict {
+        return Err(Error::usage(
+            "--strict is only supported for directory and ZIP batch conversion in this phase",
+        ));
+    }
+    if args.recursive || args.flatten || !args.include.is_empty() || !args.exclude.is_empty() {
+        return Err(Error::usage(
+            "--recursive, --include, --exclude, and --flatten require a directory or ZIP batch input",
+        ));
+    }
 
     if args.split_sheets && output == "-" {
         return Err(Error::usage(

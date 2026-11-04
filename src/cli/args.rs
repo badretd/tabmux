@@ -5,6 +5,9 @@ use clap::{ArgGroup, Args, ValueEnum};
 use crate::diagnostics::{DiagnosticsLevel, DiagnosticsPolicy};
 use crate::error::{Error, Result};
 use crate::formats;
+use crate::formats::archive::{
+    DEFAULT_MAX_COMPRESSION_RATIO, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_UNCOMPRESSED_SIZE,
+};
 use crate::formats::csv::{LineEnding, RaggedPolicy, parse_delimiter};
 use crate::ops::merge::MergeMode;
 
@@ -222,8 +225,40 @@ pub struct ConvertArgs {
     #[arg(long)]
     pub split_sheets: bool,
 
-    /// Filename template for --split-sheets. Supports {stem}, {sheet}, {format},
-    /// {ext}, and {index}.
+    /// Descend into subdirectories when the input is a directory.
+    #[arg(long)]
+    pub recursive: bool,
+
+    /// Only convert supported batch files matching these comma-separated globs.
+    #[arg(long, value_name = "GLOBS", value_delimiter = ',')]
+    pub include: Vec<String>,
+
+    /// Exclude batch files matching these comma-separated globs.
+    #[arg(long, value_name = "GLOBS", value_delimiter = ',')]
+    pub exclude: Vec<String>,
+
+    /// Drop relative directories from batch output names.
+    #[arg(long)]
+    pub flatten: bool,
+
+    /// Maximum number of members accepted from a ZIP batch input.
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_MAX_ENTRIES)]
+    pub max_archive_entries: usize,
+
+    /// Maximum total uncompressed bytes accepted from a ZIP batch input.
+    #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_MAX_UNCOMPRESSED_SIZE)]
+    pub max_uncompressed_size: u64,
+
+    /// Maximum compression ratio for members at least 1 MiB (ZIP batch input).
+    #[arg(long, value_name = "RATIO", default_value_t = DEFAULT_MAX_COMPRESSION_RATIO)]
+    pub max_compression_ratio: u64,
+
+    /// Fail before writing when a batch input contains unsupported files.
+    #[arg(long)]
+    pub strict: bool,
+
+    /// Filename template for --split-sheets and batch output. Supports {stem},
+    /// {sheet}, {format}, {ext}, and {index}.
     #[arg(long, value_name = "TEMPLATE")]
     pub name_template: Option<String>,
 

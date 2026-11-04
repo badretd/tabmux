@@ -835,6 +835,23 @@ Expected:
 - No file escapes the output directory.
 - Archive limits are enforced and tested.
 
+**Implementation note (2026-11-04)**
+
+- A batch input is a single directory or `.zip` path. `--recursive` controls
+  directory descent; ZIP members are always traversed. Output must be a
+  directory, not stdout.
+- Batch outputs are delimited tables (`.csv`/`.tsv`). The default name template
+  is `{stem}.{format}`, or `{stem}.{sheet}.{format}` when every sheet/table is
+  selected. Relative directories are preserved unless `--flatten` is used;
+  collisions receive stable numeric suffixes.
+- Unsupported members emit `format.unsupported` and are skipped. `--strict`
+  exits with code 5 before creating the output directory. The full loss-report
+  file and the general strict-mode policy arrive in Phase 9.
+- ZIP defaults: 10,000 entries, 512 MiB uncompressed total, and a compression
+  ratio of 200 for members of at least 1 MiB. The limits are configurable with
+  `--max-archive-entries`, `--max-uncompressed-size`, and
+  `--max-compression-ratio`.
+
 ---
 
 ### Phase 8 — Pipeline manifest, dry-run, replay

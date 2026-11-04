@@ -11,6 +11,7 @@ use std::path::Path;
 use crate::error::{Error, Result};
 use crate::model::{SourceRef, Table, TableSet};
 
+pub mod archive;
 pub mod csv;
 #[cfg(feature = "html")]
 pub mod html;
@@ -37,6 +38,9 @@ pub enum FormatId {
     Ods,
     Html,
     Json,
+    /// Not a table format. Used only as the source format on loss events for
+    /// batch files whose extension is not supported.
+    Unknown,
 }
 
 impl FormatId {
@@ -49,6 +53,7 @@ impl FormatId {
             Self::Ods => "ods",
             Self::Html => "html",
             Self::Json => "json",
+            Self::Unknown => "unknown",
         }
     }
 
@@ -413,6 +418,7 @@ pub fn read_tables(
         FormatId::Html => Err(Error::unsupported(
             "html support is not compiled in (enable the html feature)",
         )),
+        FormatId::Unknown => Err(Error::unsupported("unknown input format")),
     }
 }
 
@@ -485,6 +491,7 @@ pub fn write_tables<W: Write + Seek>(
             "writing {} is not implemented yet",
             format.label()
         ))),
+        FormatId::Unknown => Err(Error::unsupported("unknown output format")),
     }
 }
 

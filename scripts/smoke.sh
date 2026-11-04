@@ -511,4 +511,77 @@ grep -q -- '--merge-policy' "$TMP_DIR/html-merge.err" \
   || fail "--merge-policy error did not explain the policy choice"
 echo "HTML header/merge policy: ok"
 
+section "Phase 7: directory and ZIP batch ingestion"
+
+"$BIN" convert fixtures/batch/ "$TMP_DIR/batch/" --recursive \
+  --include '*.csv,*.xlsx,*.html' --name-template '{stem}.csv' \
+  2>"$TMP_DIR/batch.err"
+[[ "$(find "$TMP_DIR/batch" -type f | wc -l | tr -d ' ')" == "4" ]] \
+  || fail "directory batch did not write four outputs"
+[[ -f "$TMP_DIR/batch/nested/regions.csv" ]] \
+  || fail "directory batch did not preserve the nested path"
+[[ -f "$TMP_DIR/batch/sales.csv" ]] || fail "directory batch lost sales.csv"
+[[ -f "$TMP_DIR/batch/book.csv" ]] || fail "directory batch lost book.xlsx"
+[[ -f "$TMP_DIR/batch/page.csv" ]] || fail "directory batch lost page.html"
+grep -q 'notes.txt' "$TMP_DIR/batch.err" \
+  || fail "directory batch did not report the unsupported text file"
+grep -q 'format.unsupported' "$TMP_DIR/batch.err" \
+  || fail "directory batch did not emit format.unsupported"
+grep -q 'wrote 4 output(s) from 4 supported input(s); skipped 1 unsupported input(s)' \
+  "$TMP_DIR/batch.err" || fail "directory batch summary was missing"
+echo "directory batch: ok"
+
+"$BIN" convert fixtures/batch/ "$TMP_DIR/batch-second/" --recursive \
+  --include '*.csv,*.xlsx,*.html' --name-template '{stem}.csv' \
+  >/dev/null 2>&1
+diff -r "$TMP_DIR/batch" "$TMP_DIR/batch-second" \
+  || fail "two batch runs produced different output"
+echo "batch determinism: ok"
+
+"$BIN" convert fixtures/archive.zip "$TMP_DIR/archive-out/" --recursive \
+  2>"$TMP_DIR/archive.err"
+[[ "$(find "$TMP_DIR/archive-out" -type f | wc -l | tr -d ' ')" == "4" ]] \
+  || fail "ZIP batch did not write four outputs"
+[[ -f "$TMP_DIR/archive-out/nested/regions.csv" ]] \
+  || fail "ZIP batch did not preserve a nested member path"
+grep -q 'archive.zip::notes.txt' "$TMP_DIR/archive.err" \
+  || fail "ZIP batch did not name the skipped member"
+echo "ZIP batch: ok"
+
+set +e
+"$BIN" convert fixtures/traversal.zip "$TMP_DIR/traversal-out/" \
+  >/dev/null 2>"$TMP_DIR/traversal.err"
+traversal_status=$?
+set -e
+[[ "$traversal_status" -eq 1 ]] \
+  || fail "traversal archive exited $traversal_status, expected 1"
+grep -q 'escapes the archive root' "$TMP_DIR/traversal.err" \
+  || fail "traversal archive was not rejected with a clear error"
+[[ ! -e "$TMP_DIR/traversal-out" ]] \
+  || fail "traversal archive created an output directory"
+
+set +e
+"$BIN" convert fixtures/bomb.zip "$TMP_DIR/bomb-out/" \
+  >/dev/null 2>"$TMP_DIR/bomb.err"
+bomb_status=$?
+set -e
+[[ "$bomb_status" -eq 1 ]] \
+  || fail "ZIP bomb exited $bomb_status, expected 1"
+grep -q 'compression ratio' "$TMP_DIR/bomb.err" \
+  || fail "ZIP bomb was not rejected by the compression-ratio limit"
+[[ ! -e "$TMP_DIR/bomb-out" ]] || fail "ZIP bomb created an output directory"
+
+set +e
+"$BIN" convert fixtures/batch/ "$TMP_DIR/batch-strict/" --recursive --strict \
+  >/dev/null 2>"$TMP_DIR/batch-strict.err"
+batch_strict_status=$?
+set -e
+[[ "$batch_strict_status" -eq 5 ]] \
+  || fail "strict batch exited $batch_strict_status, expected 5"
+[[ ! -e "$TMP_DIR/batch-strict" ]] \
+  || fail "strict batch created an output directory"
+grep -q 'no output was written' "$TMP_DIR/batch-strict.err" \
+  || fail "strict batch did not explain that nothing was written"
+echo "batch security and strict mode: ok"
+
 printf '\nsmoke: all checks passed\n'

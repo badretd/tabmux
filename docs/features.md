@@ -547,7 +547,7 @@ outputs:
 - **PDF:** text extraction plus table heuristics (column alignment, ruling lines, whitespace); confidence scores.
 - **DOCX/ODT:** tables from word-processing documents, including merged cells.
 - **Email (EML/MSG):** body tables and CSV/XLSX attachments.
-- **Archives/directories:** recursively read CSV/XLSX/JSON/HTML files from ZIP/TAR/7z and directories.
+- **Archives/directories:** recursively read CSV/TSV/XLSX/ODS/JSON/JSONL/HTML files from ZIP archives and directories, with deterministic ordering, include/exclude filters, path-traversal protection, and archive size/ratio limits. TAR and 7z are deferred.
 - **Workbook assembly:** one sheet per table, an optional index sheet, caption/file/page metadata, deduplicated sheet names, and a warning report.
 
 This directly generalizes the user's idea #5 (HTML tables → XLSX with one sheet per table) to any document source.
