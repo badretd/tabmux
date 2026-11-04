@@ -9,10 +9,12 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::model::{SourceRef, Table};
+use crate::model::{SourceRef, Table, TableSet};
 
 pub mod csv;
 pub mod json;
+#[cfg(feature = "excel")]
+pub mod xlsx;
 
 /// Stable identifier for a supported input/output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,7 +53,10 @@ impl FormatId {
         {
             "csv" => Some(Self::Csv),
             "tsv" | "tab" => Some(Self::Tsv),
-            "xlsx" => Some(Self::Xlsx),
+            // Legacy Excel containers are read through the same capability row
+            // because the registry is about the conversion format, not the
+            // on-disk container version.
+            "xlsx" | "xlsm" | "xls" | "xlsb" => Some(Self::Xlsx),
             "ods" => Some(Self::Ods),
             "html" | "htm" => Some(Self::Html),
             "json" | "jsonl" | "ndjson" => Some(Self::Json),
@@ -181,6 +186,20 @@ const fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+/// Which table or tables to read from a multi-table source.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SheetSelection {
+    /// The format default: the first sheet for workbooks.
+    #[default]
+    Default,
+    /// Every sheet in workbook order.
+    All,
+    /// A sheet selected by name.
+    Named(String),
+    /// A sheet selected by 1-based index.
+    Index(usize),
+}
+
 /// Options shared by all readers.
 #[derive(Debug, Clone)]
 pub struct ReadOptions {
@@ -188,6 +207,7 @@ pub struct ReadOptions {
     pub has_header: bool,
     pub ragged: csv::RaggedPolicy,
     pub encoding: Option<String>,
+    pub sheets: SheetSelection,
 }
 
 impl Default for ReadOptions {
@@ -197,6 +217,7 @@ impl Default for ReadOptions {
             has_header: true,
             ragged: csv::RaggedPolicy::Error,
             encoding: None,
+            sheets: SheetSelection::Default,
         }
     }
 }
@@ -238,33 +259,86 @@ pub fn detect_path(path: &Path) -> Option<FormatId> {
         .and_then(FormatId::from_extension)
 }
 
+/// List the tables in a multi-table input.
+pub fn sheet_names(source: &SourceRef, bytes: &[u8], format: FormatId) -> Result<Vec<String>> {
+    let _ = (source, bytes);
+    match format {
+        #[cfg(feature = "excel")]
+        FormatId::Xlsx => xlsx::sheet_names(source, bytes),
+        #[cfg(not(feature = "excel"))]
+        FormatId::Xlsx => Err(Error::unsupported(
+            "xlsx support is not compiled in (enable the excel feature)",
+        )),
+        _ => Err(Error::unsupported(format!(
+            "{} is not a multi-table workbook",
+            format.label()
+        ))),
+    }
+}
+
 /// Read a single table from already-loaded bytes.
+///
+/// For a multi-table input this reads the format default (the first sheet for
+/// workbooks). Use [`read_tables`] when the caller controls sheet selection.
 pub fn read_table(
     source: &SourceRef,
     bytes: &[u8],
     format: FormatId,
     options: &ReadOptions,
 ) -> Result<Table> {
+    read_tables(source, bytes, format, options)?.into_single()
+}
+
+/// Read one or more tables from already-loaded bytes.
+pub fn read_tables(
+    source: &SourceRef,
+    bytes: &[u8],
+    format: FormatId,
+    options: &ReadOptions,
+) -> Result<TableSet> {
     match format {
-        FormatId::Csv | FormatId::Tsv => csv::read(
+        FormatId::Csv | FormatId::Tsv => {
+            let table = csv::read(
+                source,
+                bytes,
+                format == FormatId::Tsv,
+                &csv::ReadOptions {
+                    delimiter: options.delimiter,
+                    has_header: options.has_header,
+                    ragged: options.ragged,
+                    encoding: options.encoding.clone(),
+                },
+            )?;
+            let mut set = TableSet::new(source.clone());
+            set.push(table);
+            Ok(set)
+        }
+        FormatId::Json => {
+            let table = json::read(
+                source,
+                bytes,
+                &json::ReadOptions {
+                    encoding: options.encoding.clone(),
+                },
+            )?;
+            let mut set = TableSet::new(source.clone());
+            set.push(table);
+            Ok(set)
+        }
+        #[cfg(feature = "excel")]
+        FormatId::Xlsx => xlsx::read(
             source,
             bytes,
-            format == FormatId::Tsv,
-            &csv::ReadOptions {
-                delimiter: options.delimiter,
+            &xlsx::ReadOptions {
                 has_header: options.has_header,
-                ragged: options.ragged,
-                encoding: options.encoding.clone(),
+                sheets: options.sheets.clone(),
             },
         ),
-        FormatId::Json => json::read(
-            source,
-            bytes,
-            &json::ReadOptions {
-                encoding: options.encoding.clone(),
-            },
-        ),
-        FormatId::Xlsx | FormatId::Ods | FormatId::Html => Err(Error::unsupported(format!(
+        #[cfg(not(feature = "excel"))]
+        FormatId::Xlsx => Err(Error::unsupported(
+            "xlsx support is not compiled in (enable the excel feature)",
+        )),
+        FormatId::Ods | FormatId::Html => Err(Error::unsupported(format!(
             "reading {} is not implemented yet",
             format.label()
         ))),

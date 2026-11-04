@@ -423,6 +423,192 @@ fn input_and_output_must_not_be_the_same_file() {
 }
 
 #[test]
+fn sheets_lists_workbook_sheets_in_order() {
+    let output = tabmux()
+        .arg("sheets")
+        .arg(fixture("sales.xlsx"))
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Sales\nRegions\nNotes\n"
+    );
+}
+
+#[test]
+fn sheets_rejects_delimited_input() {
+    let output = tabmux()
+        .arg("sheets")
+        .arg(fixture("basic.csv"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert!(stderr(&output).contains("not a multi-table workbook"));
+}
+
+#[test]
+fn xlsx_sheet_converts_to_csv_with_dates_and_cached_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("sales.csv");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.xlsx"))
+        .arg(&destination)
+        .arg("--sheet")
+        .arg("Sales")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let text = fs::read_to_string(&destination).unwrap();
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(lines[0], "id,name,region,amount,sold_on,note");
+    assert!(lines[1].starts_with("1,Alice,North,120,2026-01-15,"));
+    assert!(lines[2].contains("2026-02-01"));
+    assert!(
+        text.contains("400.5"),
+        "cached formula value missing:\n{text}"
+    );
+
+    let error = stderr(&output);
+    assert!(error.contains("excel.merged_cell_expanded"));
+    assert!(error.contains("excel.formula_cached_value_only"));
+    assert!(error.contains("excel.chart_dropped"));
+    assert!(error.contains("excel.style_dropped"));
+}
+
+#[test]
+fn xlsx_sheet_index_is_one_based() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("regions.csv");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.xlsx"))
+        .arg(&destination)
+        .arg("--sheet-index")
+        .arg("2")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let text = fs::read_to_string(&destination).unwrap();
+    assert!(text.starts_with("region,manager\nNorth,Ada\n"));
+}
+
+#[test]
+fn all_sheets_split_writes_one_file_per_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let output_dir = dir.path().join("sheets");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.xlsx"))
+        .arg(&output_dir)
+        .arg("--all-sheets")
+        .arg("--split-sheets")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let mut names = fs::read_dir(&output_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        ["sales.Notes.csv", "sales.Regions.csv", "sales.Sales.csv"]
+    );
+}
+
+#[test]
+fn all_sheets_without_split_is_a_usage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("out.csv");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.xlsx"))
+        .arg(&destination)
+        .arg("--all-sheets")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("--split-sheets"));
+    assert!(!destination.exists());
+}
+
+#[test]
+fn missing_sheet_lists_available_sheets() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("out.csv");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.xlsx"))
+        .arg(&destination)
+        .arg("--sheet")
+        .arg("Missing")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let error = stderr(&output);
+    assert!(error.contains("Missing"));
+    assert!(error.contains("Sales"));
+    assert!(error.contains("Regions"));
+    assert!(!destination.exists());
+}
+
+#[test]
+fn malformed_workbooks_fail_without_panicking() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("broken.xlsx");
+    let destination = dir.path().join("out.csv");
+    fs::write(&input, b"this is not a zip container").unwrap();
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(&input)
+        .arg(&destination)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("cannot open workbook"));
+    assert!(!destination.exists());
+}
+
+#[test]
+fn xlsx_head_and_count_use_the_selected_sheet() {
+    let count = tabmux()
+        .arg("count")
+        .arg(fixture("sales.xlsx"))
+        .arg("--sheet")
+        .arg("Regions")
+        .output()
+        .unwrap();
+    assert_success(&count);
+    assert_eq!(String::from_utf8(count.stdout).unwrap(), "2\n");
+
+    let head = tabmux()
+        .arg("head")
+        .arg(fixture("sales.xlsx"))
+        .arg("--sheet")
+        .arg("Regions")
+        .arg("--rows")
+        .arg("1")
+        .output()
+        .unwrap();
+    assert_success(&head);
+    assert_eq!(
+        String::from_utf8(head.stdout).unwrap(),
+        "region,manager\nNorth,Ada\n"
+    );
+}
+
+#[test]
 fn output_can_be_written_with_the_short_flag_or_to_stdout() {
     let dir = tempfile::tempdir().unwrap();
     let destination = dir.path().join("out.csv");

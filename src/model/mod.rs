@@ -42,6 +42,18 @@ impl SourceRef {
         }
     }
 
+    /// Attach a sheet name.
+    pub fn with_sheet(mut self, sheet: impl Into<String>) -> Self {
+        self.sheet = Some(sheet.into());
+        self
+    }
+
+    /// Attach an HTML table name or index.
+    pub fn with_table(mut self, table: impl Into<String>) -> Self {
+        self.table = Some(table.into());
+        self
+    }
+
     /// Attach a 1-based data row.
     pub fn with_row(mut self, row: u64) -> Self {
         self.row = Some(row);
@@ -51,6 +63,12 @@ impl SourceRef {
     /// Attach a column name.
     pub fn with_column(mut self, column: impl Into<String>) -> Self {
         self.column = Some(column.into());
+        self
+    }
+
+    /// Attach an A1-style cell reference where the source has one.
+    pub fn with_cell(mut self, cell: impl Into<String>) -> Self {
+        self.cell = Some(cell.into());
         self
     }
 

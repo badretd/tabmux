@@ -6,6 +6,36 @@ use crate::error::{Error, Result};
 use crate::formats;
 use crate::formats::csv::{LineEnding, RaggedPolicy, parse_delimiter};
 
+/// Sheet/table selection shared by commands that can read workbooks.
+#[derive(Debug, Clone, Args)]
+pub struct SheetArgs {
+    /// Read one sheet by name.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["sheet_index", "all_sheets"])]
+    pub sheet: Option<String>,
+
+    /// Read one sheet by 1-based index.
+    #[arg(long, value_name = "N", conflicts_with_all = ["sheet", "all_sheets"])]
+    pub sheet_index: Option<usize>,
+
+    /// Read every sheet in workbook order.
+    #[arg(long, conflicts_with_all = ["sheet", "sheet_index"])]
+    pub all_sheets: bool,
+}
+
+impl SheetArgs {
+    pub fn selection(&self) -> formats::SheetSelection {
+        if self.all_sheets {
+            formats::SheetSelection::All
+        } else if let Some(index) = self.sheet_index {
+            formats::SheetSelection::Index(index)
+        } else if let Some(sheet) = &self.sheet {
+            formats::SheetSelection::Named(sheet.clone())
+        } else {
+            formats::SheetSelection::Default
+        }
+    }
+}
+
 /// Options shared by every command that reads a table.
 #[derive(Debug, Clone, Args)]
 pub struct ReadArgs {
@@ -24,6 +54,9 @@ pub struct ReadArgs {
     /// Policy for rows with the wrong number of fields.
     #[arg(long, value_enum, default_value_t = RaggedPolicy::Error)]
     pub ragged: RaggedPolicy,
+
+    #[command(flatten)]
+    pub sheets: SheetArgs,
 }
 
 impl ReadArgs {
@@ -33,6 +66,7 @@ impl ReadArgs {
             has_header: !self.no_header,
             ragged: self.ragged,
             encoding: self.encoding.clone(),
+            sheets: self.sheets.selection(),
         }
     }
 }
@@ -81,6 +115,10 @@ pub struct ConvertArgs {
 
     #[command(flatten)]
     pub write: WriteArgs,
+
+    /// Write each selected sheet/table to its own file in the output directory.
+    #[arg(long)]
+    pub split_sheets: bool,
 }
 
 impl ConvertArgs {
@@ -95,6 +133,14 @@ impl ConvertArgs {
             )),
         }
     }
+}
+
+/// List the sheets in a workbook.
+#[derive(Debug, Clone, Args)]
+pub struct SheetsArgs {
+    /// Workbook path.
+    #[arg(value_name = "INPUT")]
+    pub input: String,
 }
 
 /// Count data rows.

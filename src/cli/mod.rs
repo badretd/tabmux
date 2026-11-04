@@ -2,6 +2,7 @@
 
 pub mod args;
 
+use std::collections::HashMap;
 use std::io::{self, Write as _};
 use std::path::Path;
 
@@ -10,9 +11,9 @@ use clap::{Parser, Subcommand};
 use crate::error::{Error, Result};
 use crate::formats::{self, FormatId};
 use crate::io::SafeWriter;
-use crate::model::{CellValue, Column, Row, SourceRef, Table};
+use crate::model::{CellValue, Column, Row, SourceRef, Table, TableSet};
 
-use self::args::{ConvertArgs, CountArgs, HeadArgs, ReadArgs, SelectArgs};
+use self::args::{ConvertArgs, CountArgs, HeadArgs, ReadArgs, SelectArgs, SheetsArgs};
 
 /// Top-level command-line interface.
 #[derive(Debug, Parser)]
@@ -37,6 +38,8 @@ pub enum Command {
     Formats,
     /// Convert one input to one output.
     Convert(ConvertArgs),
+    /// List the sheets in a workbook.
+    Sheets(SheetsArgs),
     /// Count data rows in a table.
     Count(CountArgs),
     /// Print the first rows of a table.
@@ -50,6 +53,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Formats => print_matrix(),
         Command::Convert(args) => convert(args),
+        Command::Sheets(args) => sheets(args),
         Command::Count(args) => count(args),
         Command::Head(args) => head(args),
         Command::Select(args) => select(args),
@@ -66,11 +70,30 @@ fn print_matrix() -> Result<()> {
 fn convert(args: ConvertArgs) -> Result<()> {
     let output = args.resolve_output()?.to_owned();
     reject_self_overwrite(&args.input, &output)?;
-    if output != "-" {
+
+    if args.read.sheets.all_sheets && !args.split_sheets {
+        return Err(Error::usage(
+            "--all-sheets requires --split-sheets (or a directory output in a later phase)",
+        ));
+    }
+    if args.split_sheets && output == "-" {
+        return Err(Error::usage(
+            "--split-sheets requires an output directory, not stdout",
+        ));
+    }
+
+    if !args.split_sheets && output != "-" {
         SafeWriter::ensure_writable(Path::new(&output), args.write.force)?;
     }
 
-    let (table, input_format) = load_table(&args.input, &args.read)?;
+    let (mut tables, input_format) = load_tables(&args.input, &args.read)?;
+
+    if args.split_sheets {
+        return write_split(&mut tables, Path::new(&output), &args);
+    }
+
+    let table = tables.into_single()?;
+    print_warnings(&table);
     let output_format = output_format(input_format, &output)?;
 
     let mut options = formats::WriteOptions::for_format(output_format);
@@ -90,7 +113,6 @@ fn convert(args: ConvertArgs) -> Result<()> {
 
     let destination = Path::new(&output);
     if args.write.dry_run {
-        SafeWriter::ensure_writable(destination, args.write.force)?;
         print_dry_run(&output, &table, output_format);
         return Ok(());
     }
@@ -98,6 +120,98 @@ fn convert(args: ConvertArgs) -> Result<()> {
     let mut writer = SafeWriter::create(destination, args.write.force, args.write.backup)?;
     formats::write_table(&mut writer, &table, output_format, &options)?;
     writer.commit()
+}
+
+fn write_split(tables: &mut TableSet, output: &Path, args: &ConvertArgs) -> Result<()> {
+    if tables.tables.is_empty() {
+        return Err(Error::data("no tables were selected to write"));
+    }
+
+    let format = FormatId::Csv;
+    let stem = input_stem(&args.input);
+    let mut used = HashMap::<String, usize>::new();
+    let mut plans = Vec::with_capacity(tables.tables.len());
+
+    for (index, table) in tables.tables.iter_mut().enumerate() {
+        let sanitized = sanitize_sheet_name(&table.name);
+        if sanitized != table.name {
+            table.push_warning(
+                crate::model::LossEvent::info(
+                    "output.sheet_name_sanitized",
+                    format!(
+                        "sheet name '{}' was sanitized to '{}' for the output filename",
+                        table.name, sanitized
+                    ),
+                )
+                .with_source(table.source.clone()),
+            );
+        }
+
+        let base = format!("{stem}.{sanitized}");
+        let count = used.entry(base.clone()).or_insert(0);
+        *count += 1;
+        let filename = if *count == 1 {
+            format!("{base}.{}", format.label())
+        } else {
+            let filename = format!("{base}-{}.{}", *count, format.label());
+            table.push_warning(
+                crate::model::LossEvent::info(
+                    "output.sheet_name_sanitized",
+                    format!(
+                        "sheet name '{}' collided with an earlier sheet; wrote '{filename}'",
+                        table.name
+                    ),
+                )
+                .with_source(table.source.clone()),
+            );
+            filename
+        };
+
+        plans.push((index, output.join(filename)));
+    }
+
+    for (_, destination) in &plans {
+        SafeWriter::ensure_writable(destination, args.write.force)?;
+    }
+
+    let mut options = formats::WriteOptions::for_format(format);
+    options.has_header = !args.read.no_header;
+    options.line_ending = args.write.line_ending;
+    options.null = args.write.null.clone();
+
+    if args.write.dry_run {
+        for (index, destination) in &plans {
+            let table = &tables.tables[*index];
+            print_dry_run(&destination.display().to_string(), table, format);
+        }
+        for table in &tables.tables {
+            print_warnings(table);
+        }
+        return Ok(());
+    }
+
+    for (index, destination) in &plans {
+        let table = &tables.tables[*index];
+        let mut writer = SafeWriter::create(destination, args.write.force, args.write.backup)?;
+        formats::write_table(&mut writer, table, format, &options)?;
+        writer.commit()?;
+    }
+
+    for table in &tables.tables {
+        print_warnings(table);
+    }
+    Ok(())
+}
+
+fn sheets(args: SheetsArgs) -> Result<()> {
+    let bytes = crate::io::read_input(&args.input)?;
+    let format = detect_input_format(&args.input, &bytes)?;
+    let source = SourceRef::new(&args.input, format);
+    let names = formats::sheet_names(&source, &bytes, format)?;
+    for name in names {
+        println!("{name}");
+    }
+    Ok(())
 }
 
 fn count(args: CountArgs) -> Result<()> {
@@ -118,13 +232,53 @@ fn select(args: SelectArgs) -> Result<()> {
     write_stdout_table(&selected, !args.read.no_header)
 }
 
-fn load_table(path: &str, read: &ReadArgs) -> Result<(Table, FormatId)> {
+fn load_tables(path: &str, read: &ReadArgs) -> Result<(TableSet, FormatId)> {
     let bytes = crate::io::read_input(path)?;
     let format = detect_input_format(path, &bytes)?;
     let source = SourceRef::new(path, format);
-    let table = formats::read_table(&source, &bytes, format, &read.options())?;
+    let tables = formats::read_tables(&source, &bytes, format, &read.options())?;
+    Ok((tables, format))
+}
+
+fn load_table(path: &str, read: &ReadArgs) -> Result<(Table, FormatId)> {
+    let (tables, format) = load_tables(path, read)?;
+    let table = tables.into_single()?;
     print_warnings(&table);
     Ok((table, format))
+}
+
+fn input_stem(input: &str) -> String {
+    if input == "-" {
+        return "stdin".to_owned();
+    }
+    Path::new(input)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("table")
+        .to_owned()
+}
+
+fn sanitize_sheet_name(name: &str) -> String {
+    let mut sanitized = String::with_capacity(name.len());
+    for character in name.chars() {
+        if character.is_control()
+            || matches!(
+                character,
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+            )
+        {
+            sanitized.push('_');
+        } else {
+            sanitized.push(character);
+        }
+    }
+    let trimmed = sanitized.trim().trim_matches('.').trim();
+    if trimmed.is_empty() {
+        "sheet".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 fn detect_input_format(path: &str, bytes: &[u8]) -> Result<FormatId> {
@@ -133,24 +287,32 @@ fn detect_input_format(path: &str, bytes: &[u8]) -> Result<FormatId> {
     }
 
     if path == "-" {
-        return Ok(sniff_content(bytes));
+        return sniff_content(bytes);
     }
 
     Err(Error::unsupported(format!(
-        "cannot detect input format for '{path}' (supported: csv, tsv, json, jsonl)"
+        "cannot detect input format for '{path}' (supported: csv, tsv, xlsx, xls, xlsb, ods, html, json, jsonl)"
     )))
 }
 
-fn sniff_content(bytes: &[u8]) -> FormatId {
-    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
-    match bytes
-        .iter()
-        .copied()
-        .find(|byte| !byte.is_ascii_whitespace())
-    {
-        Some(b'{') | Some(b'[') => FormatId::Json,
-        _ => FormatId::Csv,
+fn sniff_content(bytes: &[u8]) -> Result<FormatId> {
+    if bytes.starts_with(b"PK\x03\x04") {
+        return Err(Error::unsupported(
+            "workbook input from stdin is not supported; pass a file path so the container can be identified",
+        ));
     }
+
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    Ok(
+        match bytes
+            .iter()
+            .copied()
+            .find(|byte| !byte.is_ascii_whitespace())
+        {
+            Some(b'{') | Some(b'[') => FormatId::Json,
+            _ => FormatId::Csv,
+        },
+    )
 }
 
 fn output_format(input_format: FormatId, output: &str) -> Result<FormatId> {

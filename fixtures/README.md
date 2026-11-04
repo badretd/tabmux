@@ -22,6 +22,12 @@ demand by a script in a later phase.
 | `data.json` | JSON array of objects |
 | `data.jsonl` | JSONL input with nested objects, arrays, and nulls |
 
+## Workbook fixtures
+
+| Fixture | Purpose |
+|---|---|
+| `sales.xlsx` | Three sheets (`Sales`, `Regions`, `Notes`), native dates, a merged range, a cached formula, a styled header, and a chart part. Regenerate with `python3 scripts/make-sales-xlsx.py`. |
+
 ## Adding fixtures
 
 1. Keep files tiny unless the phase explicitly calls for a stress fixture.

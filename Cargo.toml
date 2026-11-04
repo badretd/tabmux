@@ -6,14 +6,24 @@ rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 description = "Safe, reproducible conversion of messy tabular sources into clean tables and workbooks"
 
+[features]
+default = ["core", "excel"]
+core = ["dep:clap", "dep:csv", "dep:encoding_rs", "dep:serde_json", "dep:tempfile", "dep:thiserror", "dep:chrono"]
+excel = ["dep:calamine", "dep:zip"]
+
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std"] }
-clap = { version = "=4.5.60", features = ["derive", "env", "cargo", "unicode", "string"] }
-csv = "1.4"
-encoding_rs = "0.8"
-serde_json = { version = "1.0", features = ["preserve_order"] }
-tempfile = "3.27"
-thiserror = "2.0"
+chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
+clap = { version = "=4.5.60", features = ["derive", "env", "cargo", "unicode", "string"], optional = true }
+csv = { version = "1.4", optional = true }
+encoding_rs = { version = "0.8", optional = true }
+serde_json = { version = "1.0", features = ["preserve_order"], optional = true }
+tempfile = { version = "3.27", optional = true }
+thiserror = { version = "2.0", optional = true }
+
+# Spreadsheet reading. Pinned to the version available in the offline registry;
+# the API used here is the same as the planned 0.38 line.
+calamine = { version = "0.37", features = ["dates"], optional = true }
+zip = { version = "9.1", default-features = false, features = ["deflate"], optional = true }
 
 [profile.release]
 opt-level = 3

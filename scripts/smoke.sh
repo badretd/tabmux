@@ -127,4 +127,48 @@ compgen -G "$TMP_DIR/existing.csv.*.bak" >/dev/null \
   || fail "--backup did not create a .bak file"
 echo "safe writes: ok"
 
+section "Phase 2: XLSX read, sheet selection, CSV conversion"
+
+sheet_list="$("$BIN" sheets fixtures/sales.xlsx)"
+[[ "$sheet_list" == $'Sales\nRegions\nNotes' ]] \
+  || fail "sheets output was '$sheet_list'"
+
+"$BIN" convert fixtures/sales.xlsx "$TMP_DIR/sales.csv" --sheet Sales \
+  2>"$TMP_DIR/xlsx.err"
+grep -q '^id,name,region,amount,sold_on,note' "$TMP_DIR/sales.csv" \
+  || fail "xlsx -> csv produced the wrong header"
+grep -q 'Alice,North,120,2026-01-15' "$TMP_DIR/sales.csv" \
+  || fail "xlsx dates were not exported as ISO-8601"
+grep -q '400.5' "$TMP_DIR/sales.csv" \
+  || fail "cached formula value was not exported"
+grep -q 'excel.merged_cell_expanded' "$TMP_DIR/xlsx.err" \
+  || fail "merged cells were not reported"
+grep -q 'excel.formula_cached_value_only' "$TMP_DIR/xlsx.err" \
+  || fail "formula cached values were not reported"
+grep -q 'excel.chart_dropped' "$TMP_DIR/xlsx.err" \
+  || fail "charts were not reported"
+echo "xlsx -> csv: ok"
+
+mkdir "$TMP_DIR/all-sheets"
+"$BIN" convert fixtures/sales.xlsx "$TMP_DIR/all-sheets/" \
+  --all-sheets --split-sheets >/dev/null 2>&1
+[[ "$(find "$TMP_DIR/all-sheets" -type f | wc -l | tr -d ' ')" == "3" ]] \
+  || fail "--all-sheets --split-sheets did not write three files"
+grep -q '^region,manager' "$TMP_DIR/all-sheets/sales.Regions.csv" \
+  || fail "the Regions sheet was not written"
+echo "split sheets: ok"
+
+set +e
+"$BIN" convert fixtures/sales.xlsx "$TMP_DIR/missing.csv" \
+  --sheet Missing >/dev/null 2>"$TMP_DIR/missing.err"
+missing_status=$?
+set -e
+[[ "$missing_status" -eq 1 ]] \
+  || fail "missing sheet exited $missing_status, expected 1"
+grep -q 'Sales' "$TMP_DIR/missing.err" \
+  || fail "missing-sheet error did not list available sheets"
+[[ ! -e "$TMP_DIR/missing.csv" ]] \
+  || fail "missing-sheet error created an output file"
+echo "missing sheet: ok"
+
 printf '\nsmoke: all checks passed\n'
