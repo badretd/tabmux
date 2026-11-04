@@ -337,4 +337,102 @@ set -e
 [[ ! -e "$TMP_DIR/multi.csv" ]] || fail "validation failure wrote an output"
 echo "workbook output validation: ok"
 
+section "Phase 5: merge/concat, schema diff, basic transforms"
+
+"$BIN" merge fixtures/a.csv fixtures/b.csv -o "$TMP_DIR/merged.csv" --mode strict
+[[ "$(wc -l <"$TMP_DIR/merged.csv" | tr -d ' ')" == "6" ]] \
+  || fail "strict merge did not produce five data rows"
+[[ "$(head -n 1 "$TMP_DIR/merged.csv")" == "id,name,amount,active,joined" ]] \
+  || fail "strict merge produced the wrong header"
+grep -q '^4,Dave,' "$TMP_DIR/merged.csv" \
+  || fail "strict merge lost the second input"
+echo "strict merge: ok"
+
+"$BIN" concat fixtures/a.csv fixtures/b.csv -o "$TMP_DIR/concat.csv" --mode loose
+[[ "$(wc -l <"$TMP_DIR/concat.csv" | tr -d ' ')" == "6" ]] \
+  || fail "concat alias did not merge both inputs"
+echo "concat alias: ok"
+
+set +e
+"$BIN" merge fixtures/a.csv fixtures/c.csv -o "$TMP_DIR/schema-bad.csv" \
+  --mode strict >/dev/null 2>"$TMP_DIR/schema.err"
+schema_status=$?
+set -e
+[[ "$schema_status" -eq 1 ]] \
+  || fail "strict schema mismatch exited $schema_status, expected 1"
+grep -q "missing column 'joined'" "$TMP_DIR/schema.err" \
+  || fail "schema diff did not report the missing column"
+grep -q 'column order differs' "$TMP_DIR/schema.err" \
+  || fail "schema diff did not report the reordered columns"
+[[ ! -e "$TMP_DIR/schema-bad.csv" ]] \
+  || fail "strict schema mismatch wrote an output file"
+
+set +e
+"$BIN" merge fixtures/a.csv fixtures/c.csv -o "$TMP_DIR/schema-json.csv" \
+  --mode strict --json >"$TMP_DIR/schema.json" 2>/dev/null
+json_status=$?
+set -e
+[[ "$json_status" -eq 1 ]] \
+  || fail "JSON schema mismatch exited $json_status, expected 1"
+grep -q '"missing"' "$TMP_DIR/schema.json" \
+  || fail "--json did not produce a machine-readable schema diff"
+grep -q '"joined"' "$TMP_DIR/schema.json" \
+  || fail "--json schema diff omitted the missing column"
+
+set +e
+"$BIN" merge fixtures/a.csv fixtures/d.csv -o "$TMP_DIR/type-bad.csv" \
+  --mode strict >/dev/null 2>"$TMP_DIR/type.err"
+type_status=$?
+set -e
+[[ "$type_status" -eq 1 ]] \
+  || fail "strict type conflict exited $type_status, expected 1"
+grep -q "type conflict on 'amount': float vs text" "$TMP_DIR/type.err" \
+  || fail "schema diff did not report the type conflict"
+echo "schema diff: ok"
+
+"$BIN" merge fixtures/a.csv fixtures/c.csv -o "$TMP_DIR/loose.csv" \
+  --mode loose --add-source-column origin --dedup
+[[ "$(head -n 1 "$TMP_DIR/loose.csv")" == "id,name,amount,active,joined,origin" ]] \
+  || fail "loose merge did not union the columns"
+[[ "$(wc -l <"$TMP_DIR/loose.csv" | tr -d ' ')" == "5" ]] \
+  || fail "loose merge did not keep the expected rows"
+grep -q ',a.csv$' "$TMP_DIR/loose.csv" \
+  || fail "loose merge is missing a.csv provenance"
+grep -q ',c.csv$' "$TMP_DIR/loose.csv" \
+  || fail "loose merge is missing c.csv provenance"
+
+"$BIN" merge fixtures/a.csv fixtures/a.csv -o "$TMP_DIR/deduped.csv" \
+  --mode loose --add-source-column origin --dedup
+[[ "$(wc -l <"$TMP_DIR/deduped.csv" | tr -d ' ')" == "4" ]] \
+  || fail "merge --dedup did not collapse identical rows"
+echo "loose merge and dedup: ok"
+
+"$BIN" select fixtures/a.csv --columns name,amount \
+  | "$BIN" filter - --where 'amount > 100' >"$TMP_DIR/filtered.csv"
+[[ "$(wc -l <"$TMP_DIR/filtered.csv" | tr -d ' ')" == "3" ]] \
+  || fail "filter numeric comparison kept the wrong number of rows"
+grep -q '^Alice,120.5$' "$TMP_DIR/filtered.csv" \
+  || fail "filter dropped Alice"
+grep -q '^Carol,200$' "$TMP_DIR/filtered.csv" \
+  || fail "filter dropped Carol"
+echo "filter pipeline: ok"
+
+"$BIN" sort fixtures/a.csv --by amount:desc >"$TMP_DIR/sorted.csv"
+[[ "$(sed -n '2p' "$TMP_DIR/sorted.csv" | cut -d, -f2)" == "Carol" ]] \
+  || fail "sort --by amount:desc did not put Carol first"
+[[ "$(sed -n '4p' "$TMP_DIR/sorted.csv" | cut -d, -f2)" == "Bob" ]] \
+  || fail "sort --by amount:desc did not put Bob last"
+echo "sort: ok"
+
+"$BIN" rename fixtures/a.csv --map amount=total,active=enabled >"$TMP_DIR/renamed.csv"
+[[ "$(head -n 1 "$TMP_DIR/renamed.csv")" == "id,name,total,enabled,joined" ]] \
+  || fail "rename did not rewrite the selected headers"
+echo "rename: ok"
+
+printf 'id,name\n1,Alice\n2,Bob\n1,Alice\n' >"$TMP_DIR/duplicates.csv"
+"$BIN" dedupe "$TMP_DIR/duplicates.csv" >"$TMP_DIR/deduped-rows.csv"
+[[ "$(wc -l <"$TMP_DIR/deduped-rows.csv" | tr -d ' ')" == "3" ]] \
+  || fail "dedupe did not keep exactly the first occurrences"
+echo "dedupe: ok"
+
 printf '\nsmoke: all checks passed\n'

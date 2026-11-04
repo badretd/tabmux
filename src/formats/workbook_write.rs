@@ -16,6 +16,7 @@ use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use crate::error::{Error, Result};
 use crate::formats::FormatId;
 use crate::model::{CellValue, ColumnType, SourceRef, Table};
+use crate::ops::schema;
 
 /// Excel's hard limit for worksheet names.
 pub const MAX_SHEET_NAME: usize = 31;
@@ -43,7 +44,7 @@ pub fn infer_text_types(table: &mut Table) {
     let mut inferred = vec![ColumnType::Null; table.width()];
     for row in &table.rows {
         for (index, cell) in row.iter().enumerate().take(inferred.len()) {
-            inferred[index] = inferred[index].merge(infer_type(cell));
+            inferred[index] = inferred[index].merge(schema::infer_cell_type(cell));
         }
     }
 
@@ -65,30 +66,6 @@ pub fn infer_text_types(table: &mut Table) {
     }
 }
 
-fn infer_type(cell: &CellValue) -> ColumnType {
-    match cell {
-        CellValue::Text(text) if text.is_empty() => ColumnType::Null,
-        CellValue::Text(text) => {
-            if matches!(text.as_str(), "true" | "false") {
-                ColumnType::Bool
-            } else if parse_safe_int(text).is_some() {
-                ColumnType::Int
-            } else if parse_safe_float(text).is_some() {
-                ColumnType::Float
-            } else if parse_date(text).is_some() {
-                ColumnType::Date
-            } else if parse_datetime(text).is_some() {
-                ColumnType::DateTime
-            } else if parse_time(text).is_some() {
-                ColumnType::Time
-            } else {
-                ColumnType::Text
-            }
-        }
-        other => other.type_of(),
-    }
-}
-
 fn convert_cell(cell: &CellValue, target: ColumnType) -> CellValue {
     let CellValue::Text(text) = cell else {
         return cell.clone();
@@ -104,93 +81,24 @@ fn convert_cell(cell: &CellValue, target: ColumnType) -> CellValue {
             "false" => CellValue::Bool(false),
             _ => cell.clone(),
         },
-        ColumnType::Int => parse_safe_int(text)
+        ColumnType::Int => schema::parse_safe_int(text)
             .map(CellValue::Int)
             .unwrap_or_else(|| cell.clone()),
-        ColumnType::Float => parse_safe_float(text)
+        ColumnType::Float => schema::parse_safe_float(text)
             .map(CellValue::Float)
-            .or_else(|| parse_safe_int(text).map(|value| CellValue::Float(value as f64)))
+            .or_else(|| schema::parse_safe_int(text).map(|value| CellValue::Float(value as f64)))
             .unwrap_or_else(|| cell.clone()),
-        ColumnType::Date => parse_date(text)
+        ColumnType::Date => schema::parse_date(text)
             .map(CellValue::Date)
             .unwrap_or_else(|| cell.clone()),
-        ColumnType::DateTime => parse_datetime(text)
+        ColumnType::DateTime => schema::parse_datetime(text)
             .map(CellValue::DateTime)
             .unwrap_or_else(|| cell.clone()),
-        ColumnType::Time => parse_time(text)
+        ColumnType::Time => schema::parse_time(text)
             .map(CellValue::Time)
             .unwrap_or_else(|| cell.clone()),
         ColumnType::Decimal | ColumnType::Text | ColumnType::Error => cell.clone(),
     }
-}
-
-/// Parse an integer only when doing so cannot silently change a leading zero.
-fn parse_safe_int(text: &str) -> Option<i64> {
-    if text.is_empty() {
-        return None;
-    }
-
-    let digits = text
-        .strip_prefix('-')
-        .or_else(|| text.strip_prefix('+'))
-        .unwrap_or(text);
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    if digits.len() > 1 && digits.starts_with('0') {
-        return None;
-    }
-    text.parse::<i64>().ok()
-}
-
-/// Parse a float only when the text clearly carries a fractional/exponent form.
-fn parse_safe_float(text: &str) -> Option<f64> {
-    if !text.contains('.') && !text.contains('e') && !text.contains('E') {
-        return None;
-    }
-
-    let value = text.parse::<f64>().ok()?;
-    if !value.is_finite() {
-        return None;
-    }
-
-    let body = text
-        .strip_prefix('-')
-        .or_else(|| text.strip_prefix('+'))
-        .unwrap_or(text);
-    let integer_part = body.split(['.', 'e', 'E']).next().unwrap_or(body);
-    if integer_part.len() > 1 && integer_part.starts_with('0') {
-        return None;
-    }
-    Some(value)
-}
-
-fn parse_date(text: &str) -> Option<NaiveDate> {
-    if text.len() != 10 {
-        return None;
-    }
-    NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
-}
-
-fn parse_datetime(text: &str) -> Option<NaiveDateTime> {
-    if let Ok(value) = chrono::DateTime::parse_from_rfc3339(text) {
-        return Some(value.naive_utc());
-    }
-    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
-        if let Ok(value) = NaiveDateTime::parse_from_str(text, format) {
-            return Some(value);
-        }
-    }
-    None
-}
-
-fn parse_time(text: &str) -> Option<NaiveTime> {
-    for format in ["%H:%M:%S%.f", "%H:%M"] {
-        if let Ok(value) = NaiveTime::parse_from_str(text, format) {
-            return Some(value);
-        }
-    }
-    None
 }
 
 /// Sanitise a worksheet name for Excel's rules. ODS uses the same rules so a

@@ -12,11 +12,12 @@ use crate::diagnostics::{DiagnosticsPolicy, DiagnosticsScope};
 use crate::error::{Error, Result};
 use crate::formats::{self, FormatId};
 use crate::io::SafeWriter;
-use crate::model::{CellValue, Column, ColumnType, LossEvent, Row, SourceRef, Table, TableSet};
+use crate::model::{CellValue, Column, ColumnType, LossEvent, SourceRef, Table, TableSet};
+use crate::ops::{dedupe, filter, merge, rename, schema, select, sort};
 
 use self::args::{
-    CellArgs, ConvertArgs, CountArgs, DiagnosticsArgs, HeadArgs, ReadArgs, RowArgs, SelectArgs,
-    SheetsArgs,
+    CellArgs, ConvertArgs, CountArgs, DedupeArgs, DiagnosticsArgs, FilterArgs, HeadArgs, MergeArgs,
+    MergeModeArg, ReadArgs, RenameArgs, RowArgs, SelectArgs, SheetsArgs, SortArgs,
 };
 
 /// Top-level command-line interface.
@@ -57,6 +58,17 @@ pub enum Command {
     Row(RowArgs),
     /// Print one cell by row number and column.
     Cell(CellArgs),
+    /// Merge or concatenate several tables into one output.
+    #[command(visible_alias = "concat")]
+    Merge(MergeArgs),
+    /// Filter rows with a simple comparison expression.
+    Filter(FilterArgs),
+    /// Sort rows by one or more columns.
+    Sort(SortArgs),
+    /// Rename columns.
+    Rename(RenameArgs),
+    /// Drop exact duplicate rows.
+    Dedupe(DedupeArgs),
 }
 
 /// Execute a parsed command.
@@ -71,6 +83,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Command::Select(args) => select(args, diagnostics),
         Command::Row(args) => row(args, diagnostics),
         Command::Cell(args) => cell(args, diagnostics),
+        Command::Merge(args) => merge_tables(args, diagnostics),
+        Command::Filter(args) => filter_rows(args, diagnostics),
+        Command::Sort(args) => sort_rows(args, diagnostics),
+        Command::Rename(args) => rename_columns(args, diagnostics),
+        Command::Dedupe(args) => dedupe_rows(args, diagnostics),
     }
 }
 
@@ -678,7 +695,7 @@ fn head(args: HeadArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
 
 fn select(args: SelectArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
     let (table, _) = load_table(&args.input, &args.read)?;
-    let selected = select_columns(&table, &args.columns)?;
+    let selected = select::select_columns(&table, &args.columns)?;
     print_warnings(
         &selected,
         &diagnostics,
@@ -696,8 +713,8 @@ fn row(args: RowArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
         (vec![index], vec![table.rows[index].clone()])
     } else {
         let expression = args.where_expr.as_deref().unwrap_or_default();
-        let predicate = parse_where(expression)?;
-        if table.column_index(&predicate.column).is_none() {
+        let predicate = filter::parse(expression)?;
+        if !predicate.is_valid_for(&table) {
             return Err(Error::data(format!(
                 "unknown column '{}' in --where; available columns: {}",
                 predicate.column,
@@ -706,7 +723,7 @@ fn row(args: RowArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
         }
         let mut indices = Vec::new();
         for (index, row) in table.rows.iter().enumerate() {
-            if predicate.matches(&table, row) {
+            if predicate.matches(&table, row, table.source_row(index))? {
                 indices.push(index);
             }
         }
@@ -780,64 +797,159 @@ fn cell(args: CellArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
     crate::io::write_stdout(rendered.as_bytes())
 }
 
-/// A parsed simple row filter (`column == value` or `column != value`).
-struct WherePredicate {
-    column: String,
-    equals: bool,
-    value: String,
-}
+fn merge_tables(args: MergeArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
+    reject_self_overwrite(&args.inputs, &args.output)?;
 
-impl WherePredicate {
-    fn matches(&self, table: &Table, row: &Row) -> bool {
-        let Some(index) = table.column_index(&self.column) else {
-            return false;
-        };
-        let actual = row
-            .get(index)
-            .map(|cell| cell.to_text(""))
-            .unwrap_or_default();
-        let matched = actual == self.value;
-        if self.equals { matched } else { !matched }
-    }
-}
-
-fn parse_where(expression: &str) -> Result<WherePredicate> {
-    let (column, equals, raw_value) = if let Some((column, value)) = expression.split_once("!=") {
-        (column, false, value)
-    } else if let Some((column, value)) = expression.split_once("==") {
-        (column, true, value)
-    } else if let Some((column, value)) = expression.split_once('=') {
-        (column, true, value)
-    } else {
-        return Err(Error::usage(format!(
-            "invalid --where '{expression}'; expected 'column == value' or 'column != value'"
-        )));
-    };
-
-    let column = column.trim();
-    if column.is_empty() {
-        return Err(Error::usage(format!(
-            "invalid --where '{expression}'; the column name is empty"
-        )));
+    let mut tables = Vec::with_capacity(args.inputs.len());
+    for input in &args.inputs {
+        let (set, _) = load_tables(input, &args.read)?;
+        if set.tables.len() != 1 {
+            return Err(Error::usage(format!(
+                "merge input '{}' selected {} tables; select exactly one sheet with --sheet",
+                input,
+                set.tables.len()
+            )));
+        }
+        tables.push(set.into_single()?);
     }
 
-    Ok(WherePredicate {
-        column: column.to_owned(),
-        equals,
-        value: unquote(raw_value.trim()),
-    })
-}
-
-fn unquote(value: &str) -> String {
-    let bytes = value.as_bytes();
-    if bytes.len() >= 2 {
-        let first = bytes[0];
-        let last = bytes[bytes.len() - 1];
-        if (first == b'\'' && last == b'\'') || (first == b'"' && last == b'"') {
-            return value[1..value.len() - 1].to_owned();
+    if args.mode == MergeModeArg::Strict {
+        let diffs = merge::strict_diffs(&tables, args.case_insensitive_headers);
+        if !diffs.is_empty() {
+            if args.json {
+                let value = serde_json::json!({
+                    "version": 1,
+                    "mode": "strict",
+                    "diffs": diffs.iter().map(schema::SchemaDiff::to_json).collect::<Vec<_>>(),
+                });
+                let rendered = serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| "{\"version\":1}".to_owned());
+                crate::io::write_stdout(format!("{rendered}\n").as_bytes())?;
+            } else {
+                for diff in &diffs {
+                    eprint!("{}", diff.render_text());
+                }
+            }
+            return Err(Error::data(format!(
+                "strict merge found schema differences in {} input(s); no output was written",
+                diffs.len()
+            )));
         }
     }
-    value.to_owned()
+
+    let first_format = tables
+        .first()
+        .map(|table| table.source.format)
+        .unwrap_or(FormatId::Csv);
+    let merged = merge::merge(
+        tables,
+        &merge::MergeOptions {
+            source_column: args.add_source_column.clone(),
+            dedup: args.dedup,
+            case_insensitive_headers: args.case_insensitive_headers,
+        },
+    )?;
+
+    print_warnings(
+        &merged,
+        &diagnostics,
+        DiagnosticsScope::Write,
+        diagnostics.fidelity_report,
+    );
+
+    let output_format = if args.output == "-" {
+        match first_format {
+            FormatId::Csv | FormatId::Tsv => first_format,
+            _ => FormatId::Csv,
+        }
+    } else {
+        detect_supported_output(&args.output)?
+    };
+
+    let mut options = formats::WriteOptions::for_format(output_format);
+    options.has_header = !args.read.no_header;
+    options.line_ending = args.write.line_ending;
+    options.null = args.write.null.clone();
+
+    if args.output == "-" {
+        if args.write.dry_run {
+            print_dry_run("stdout", &merged, output_format);
+            return Ok(());
+        }
+        let mut buffer = Vec::new();
+        formats::write_table(&mut buffer, &merged, output_format, &options)?;
+        return crate::io::write_stdout(&buffer);
+    }
+
+    let destination = Path::new(&args.output);
+    if args.write.dry_run {
+        print_dry_run(&args.output, &merged, output_format);
+        return Ok(());
+    }
+
+    let mut writer = SafeWriter::create(destination, args.write.force, args.write.backup)?;
+    if is_workbook_output(output_format) {
+        formats::write_tables(
+            writer.file_mut(),
+            std::slice::from_ref(&merged),
+            output_format,
+            &options,
+        )?;
+    } else {
+        formats::write_table(&mut writer, &merged, output_format, &options)?;
+    }
+    writer.commit()
+}
+
+fn filter_rows(args: FilterArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
+    let (table, _) = load_table(&args.input, &args.read)?;
+    let predicate = filter::parse(&args.where_expr)?;
+    let filtered = filter::filter(&table, &predicate)?;
+    print_warnings(
+        &filtered,
+        &diagnostics,
+        DiagnosticsScope::ReadOnly,
+        diagnostics.fidelity_report,
+    );
+    write_stdout_table(&filtered, !args.read.no_header, args.display.is_pretty())
+}
+
+fn sort_rows(args: SortArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
+    let (table, _) = load_table(&args.input, &args.read)?;
+    let keys = sort::parse_keys(&args.by)?;
+    let sorted = sort::sort(&table, &keys)?;
+    print_warnings(
+        &sorted,
+        &diagnostics,
+        DiagnosticsScope::ReadOnly,
+        diagnostics.fidelity_report,
+    );
+    write_stdout_table(&sorted, !args.read.no_header, args.display.is_pretty())
+}
+
+fn rename_columns(args: RenameArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
+    let (table, _) = load_table(&args.input, &args.read)?;
+    let mappings = rename::parse_mappings(&args.map)?;
+    let renamed = rename::rename(&table, &mappings)?;
+    print_warnings(
+        &renamed,
+        &diagnostics,
+        DiagnosticsScope::ReadOnly,
+        diagnostics.fidelity_report,
+    );
+    write_stdout_table(&renamed, !args.read.no_header, args.display.is_pretty())
+}
+
+fn dedupe_rows(args: DedupeArgs, diagnostics: DiagnosticsPolicy) -> Result<()> {
+    let (table, _) = load_table(&args.input, &args.read)?;
+    let deduped = dedupe::dedupe(&table);
+    print_warnings(
+        &deduped,
+        &diagnostics,
+        DiagnosticsScope::ReadOnly,
+        diagnostics.fidelity_report,
+    );
+    write_stdout_table(&deduped, !args.read.no_header, args.display.is_pretty())
 }
 
 fn row_index(number: usize, row_count: usize) -> Result<usize> {
@@ -1127,71 +1239,6 @@ fn push_pretty_line(output: &mut String, cells: &[&str], widths: &[usize]) {
     output.push('\n');
 }
 
-fn select_columns(table: &Table, specification: &str) -> Result<Table> {
-    let mut indices = Vec::new();
-
-    for raw in specification.split(',') {
-        let raw = raw.trim();
-        if raw.is_empty() {
-            continue;
-        }
-
-        let index = match raw.parse::<usize>() {
-            Ok(0) => {
-                return Err(Error::usage("column indices are 1-based; 0 is not valid"));
-            }
-            Ok(number) => {
-                let index = number - 1;
-                if index >= table.width() {
-                    return Err(Error::data(format!(
-                        "column index {number} is out of range; the table has {} columns",
-                        table.width()
-                    )));
-                }
-                index
-            }
-            Err(_) => table.column_index(raw).ok_or_else(|| {
-                Error::data(format!(
-                    "unknown column '{raw}'; available columns: {}",
-                    table.column_names().join(", ")
-                ))
-            })?,
-        };
-
-        indices.push(index);
-    }
-
-    if indices.is_empty() {
-        return Err(Error::usage(
-            "select --columns must name at least one column",
-        ));
-    }
-
-    let columns = indices
-        .iter()
-        .map(|&index| table.columns[index].clone())
-        .collect::<Vec<Column>>();
-    let rows = table
-        .rows
-        .iter()
-        .map(|row| {
-            indices
-                .iter()
-                .map(|&index| row.get(index).cloned().unwrap_or(CellValue::Null))
-                .collect::<Row>()
-        })
-        .collect::<Vec<Row>>();
-
-    Ok(Table {
-        name: table.name.clone(),
-        source: table.source.clone(),
-        columns,
-        rows,
-        warnings: table.warnings.clone(),
-        first_data_row: table.first_data_row,
-    })
-}
-
 fn print_warnings(
     table: &Table,
     diagnostics: &DiagnosticsPolicy,
@@ -1321,10 +1368,10 @@ mod tests {
 
     #[test]
     fn select_accepts_names_and_indices() {
-        let selected = select_columns(&table(), "amount").unwrap();
+        let selected = select::select_columns(&table(), "amount").unwrap();
         assert_eq!(selected.column_names(), ["amount"]);
 
-        let selected = select_columns(&table(), "2,1").unwrap();
+        let selected = select::select_columns(&table(), "2,1").unwrap();
         assert_eq!(selected.column_names(), ["amount", "name"]);
         assert_eq!(selected.rows[0][0], CellValue::Int(1));
         assert_eq!(selected.rows[0][1], CellValue::Text("a".into()));
@@ -1332,7 +1379,7 @@ mod tests {
 
     #[test]
     fn select_reports_unknown_columns_with_available_names() {
-        let error = select_columns(&table(), "missing").unwrap_err();
+        let error = select::select_columns(&table(), "missing").unwrap_err();
         let message = error.to_string();
         assert!(message.contains("missing"));
         assert!(message.contains("name"));
@@ -1340,7 +1387,7 @@ mod tests {
 
     #[test]
     fn select_rejects_zero_indices() {
-        let error = select_columns(&table(), "0").unwrap_err();
+        let error = select::select_columns(&table(), "0").unwrap_err();
         assert_eq!(error.exit_code(), crate::error::ExitCode::Usage);
     }
 }

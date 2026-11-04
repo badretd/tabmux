@@ -97,9 +97,9 @@
   the sheet name as the last column. Strict/loose schema policy and full merge
   diagnostics arrive in Phase 5; stacking is intentionally permissive today.
 - **Row/cell addressing:** `row --number` and `cell --row` count data rows
-  only (1-based, header excluded). `row --where` accepts only
-  `column == value` and `column != value`; the value is compared as rendered
-  text and may be single- or double-quoted.
+  only (1-based, header excluded). `row --where` shares the Phase 5 predicate
+  parser with `filter`: equality is textual and numeric ordering comparisons
+  are available; values may be single- or double-quoted.
 - **Raw vs pretty:** `--raw` is the default for row/cell output so it can be
   piped. `row` raw output writes data records without a header; `cell` raw
   output writes only the cell value. `--pretty` prints an aligned terminal
@@ -152,6 +152,46 @@
   stage-then-commit atomicity is still a Phase 9 hardening item; workbook output
   itself is a single atomic `SafeWriter` commit.
 
+## Phase 5 — Merge/concat, schema diff, basic transforms
+
+- **Operations module:** select/filter/sort/rename/dedupe/merge now live in
+  `src/ops/` as pure functions over `Table`. The CLI keeps argument parsing,
+  safe writes, and diagnostics. `row --where` uses the same predicate parser as
+  `filter`, so equality semantics cannot drift between commands.
+- **Merge modes:** `--mode strict` compares every input against the first. It
+  requires the same column names in the same order and rejects incompatible
+  types (any pair whose merged type would fall back to `text`). Compatible
+  widenings such as `int` + `float` are allowed. `--mode loose` unions columns
+  by name in first-seen order and fills missing cells with null.
+- **Schema diff:** both modes share `ops::schema`. On a strict failure the
+  command prints a column-level diff to stderr and exits 1 before opening an
+  output writer. `--json` writes the same diff as one machine-readable JSON
+  document on stdout. Delimited sources keep text cells, so their diff types
+  are inferred conservatively from the values; workbook and JSON sources use
+  their native types.
+- **Case-insensitive headers:** `--case-insensitive-headers` lowercases header
+  names for matching and keeps the first input's spelling in the output. It is
+  opt-in; the default remains exact and order-sensitive.
+- **Provenance and dedup:** `--add-source-column NAME` (bare flag uses
+  `source`) appends the input file name, plus `#sheet` for workbook inputs.
+  `--dedup` runs on the merged data rows before the provenance column is
+  appended, so identical records from different inputs collapse and keep the
+  first input's provenance.
+- **Merge outputs:** `-o` defaults to stdout. CSV/TSV and workbook destinations
+  are accepted; a workbook gets one sheet named after the first input. Strict
+  validation and `--dry-run` happen before `SafeWriter::create`.
+- **Transforms:** `filter`, `sort`, `rename`, and `dedupe` write delimited rows
+  to stdout so they compose with pipes. `filter` compares `==`/`!=` as text and
+  numeric ordering (`>`, `>=`, `<`, `<=`) when the right operand is a number;
+  non-numeric values in a numeric comparison fail with file/row/column context.
+  `sort` supports comma-separated keys and `:asc`/`:desc`, is stable, and keeps
+  nulls last in both directions. `rename` accepts `old=new` and `old->new`.
+  `dedupe` keeps the first exact row, with cell type and value length included
+  in the row key.
+- **Fixtures:** `c.csv` covers missing/reordered headers and `d.csv` covers a
+  type conflict. Both are checked in and covered by integration tests and the
+  smoke script.
+
 ## Diagnostics policy
 
 - **Default (`summary`):** read-only commands show only warnings/errors that
@@ -177,7 +217,9 @@
 
 ## Scope guard
 
-Everything else follows the devplan scope: the XLSX reader is implemented, but
-ODS/HTML readers, workbook writers, merge/pipeline commands, and the loss-report
-file are still ahead. There is no network, and no `fs::write` in command code.
-All file outputs go through `io::SafeWriter`.
+Everything else follows the devplan scope: CSV/TSV/JSON and XLSX/ODS
+read/write, split/stack, row/cell inspection, and merge/concat with basic
+transforms are implemented. HTML ingestion, directory/ZIP batch mode, the
+pipeline manifest, the loss-report file, and DuckDB export are still ahead.
+There is no network, and no `fs::write` in command code. All file outputs go
+through `io::SafeWriter`.

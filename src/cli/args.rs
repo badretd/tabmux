@@ -1,11 +1,12 @@
 //! Shared command-line argument groups.
 
-use clap::{ArgGroup, Args};
+use clap::{ArgGroup, Args, ValueEnum};
 
 use crate::diagnostics::{DiagnosticsLevel, DiagnosticsPolicy};
 use crate::error::{Error, Result};
 use crate::formats;
 use crate::formats::csv::{LineEnding, RaggedPolicy, parse_delimiter};
+use crate::ops::merge::MergeMode;
 
 /// Sheet/table selection shared by commands that can read workbooks.
 #[derive(Debug, Clone, Args)]
@@ -228,6 +229,130 @@ impl ConvertArgs {
         let inputs = self.inputs[..self.inputs.len() - 1].to_vec();
         Ok((inputs, output))
     }
+}
+
+/// Merge mode exposed on the command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum MergeModeArg {
+    /// Column names, order, and types must match.
+    Strict,
+    /// Union columns by name and fill missing cells with null.
+    Loose,
+}
+
+impl From<MergeModeArg> for MergeMode {
+    fn from(mode: MergeModeArg) -> Self {
+        match mode {
+            MergeModeArg::Strict => Self::Strict,
+            MergeModeArg::Loose => Self::Loose,
+        }
+    }
+}
+
+/// Merge/concatenate several inputs into one output.
+#[derive(Debug, Clone, Args)]
+pub struct MergeArgs {
+    /// Input paths. Each input must select exactly one table.
+    #[arg(value_name = "INPUT", required = true, num_args = 2..)]
+    pub inputs: Vec<String>,
+
+    /// Output path, or - for stdout.
+    #[arg(short = 'o', long = "output", value_name = "PATH", default_value = "-")]
+    pub output: String,
+
+    /// Schema policy: strict requires identical headers and compatible types.
+    #[arg(long, value_enum, default_value_t = MergeModeArg::Strict)]
+    pub mode: MergeModeArg,
+
+    /// Append a provenance column with this name (default: source).
+    #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "source")]
+    pub add_source_column: Option<String>,
+
+    /// Drop exact duplicate data rows, keeping the first occurrence.
+    #[arg(long)]
+    pub dedup: bool,
+
+    /// Match column names without regard to case.
+    #[arg(long)]
+    pub case_insensitive_headers: bool,
+
+    /// Print a machine-readable schema diff when strict mode fails.
+    #[arg(long)]
+    pub json: bool,
+
+    #[command(flatten)]
+    pub read: ReadArgs,
+
+    #[command(flatten)]
+    pub write: WriteArgs,
+}
+
+/// Filter rows with a simple comparison expression.
+#[derive(Debug, Clone, Args)]
+pub struct FilterArgs {
+    /// Input path, or - for stdin.
+    #[arg(value_name = "INPUT")]
+    pub input: String,
+
+    /// Row filter such as 'amount > 100' or 'status != closed'.
+    #[arg(long = "where", value_name = "EXPR")]
+    pub where_expr: String,
+
+    #[command(flatten)]
+    pub read: ReadArgs,
+
+    #[command(flatten)]
+    pub display: DisplayArgs,
+}
+
+/// Sort rows by one or more columns.
+#[derive(Debug, Clone, Args)]
+pub struct SortArgs {
+    /// Input path, or - for stdin.
+    #[arg(value_name = "INPUT")]
+    pub input: String,
+
+    /// Comma-separated sort keys such as name or amount:desc.
+    #[arg(long = "by", value_name = "KEYS")]
+    pub by: String,
+
+    #[command(flatten)]
+    pub read: ReadArgs,
+
+    #[command(flatten)]
+    pub display: DisplayArgs,
+}
+
+/// Rename one or more columns.
+#[derive(Debug, Clone, Args)]
+pub struct RenameArgs {
+    /// Input path, or - for stdin.
+    #[arg(value_name = "INPUT")]
+    pub input: String,
+
+    /// Comma-separated mappings such as amount=total,old_id=id.
+    #[arg(long = "map", value_name = "MAPPINGS")]
+    pub map: String,
+
+    #[command(flatten)]
+    pub read: ReadArgs,
+
+    #[command(flatten)]
+    pub display: DisplayArgs,
+}
+
+/// Drop exact duplicate rows.
+#[derive(Debug, Clone, Args)]
+pub struct DedupeArgs {
+    /// Input path, or - for stdin.
+    #[arg(value_name = "INPUT")]
+    pub input: String,
+
+    #[command(flatten)]
+    pub read: ReadArgs,
+
+    #[command(flatten)]
+    pub display: DisplayArgs,
 }
 
 /// List the sheets in a workbook.

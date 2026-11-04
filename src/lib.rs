@@ -9,6 +9,7 @@ pub mod error;
 pub mod formats;
 pub mod io;
 pub mod model;
+pub mod ops;
 
 use std::process::ExitCode;
 

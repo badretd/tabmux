@@ -1,8 +1,9 @@
 //! CLI integration tests for the Phase 0 and Phase 1 surface.
 
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 fn tabmux() -> Command {
     Command::new(env!("CARGO_BIN_EXE_tabmux"))
@@ -1528,4 +1529,426 @@ fn stacking_multiple_inputs_into_one_workbook_sheet() {
     assert_eq!(tables[0].column_names().last().copied(), Some("origin"));
     assert_eq!(tables[0].rows[0].last(), Some(&CellValue::Text("a".into())));
     assert_eq!(tables[0].rows[4].last(), Some(&CellValue::Text("b".into())));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: merge/concat, schema diff, and basic transforms
+// ---------------------------------------------------------------------------
+
+fn run_with_stdin(args: &[&str], input: &[u8]) -> Output {
+    let mut child = tabmux()
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn tabmux");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin is piped")
+        .write_all(input)
+        .expect("write stdin");
+    child.wait_with_output().expect("wait for tabmux")
+}
+
+#[test]
+fn strict_merge_concatenates_compatible_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("merged.csv");
+
+    let output = tabmux()
+        .arg("merge")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .arg("--mode")
+        .arg("strict")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let text = fs::read_to_string(&destination).unwrap();
+    let lines = text.lines().collect::<Vec<_>>();
+    assert_eq!(lines[0], "id,name,amount,active,joined");
+    assert_eq!(lines.len(), 6);
+    assert!(lines[4].starts_with("4,Dave,"));
+    assert!(lines[5].starts_with("5,Eve,"));
+}
+
+#[test]
+fn concat_is_an_alias_for_merge() {
+    let output = tabmux()
+        .arg("concat")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg("-")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(String::from_utf8(output.stdout).unwrap().lines().count(), 6);
+}
+
+#[test]
+fn strict_merge_failure_reports_a_schema_diff_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("merged.csv");
+
+    let output = tabmux()
+        .arg("merge")
+        .arg(fixture("a.csv"))
+        .arg(fixture("c.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .arg("--mode")
+        .arg("strict")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let error = stderr(&output);
+    assert!(error.contains("schema diff"));
+    assert!(error.contains("missing column 'joined'"));
+    assert!(error.contains("column order differs"));
+    assert!(!destination.exists());
+
+    let output = tabmux()
+        .arg("merge")
+        .arg(fixture("a.csv"))
+        .arg(fixture("c.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .arg("--mode")
+        .arg("strict")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let json = String::from_utf8(output.stdout).unwrap();
+    assert!(json.contains("\"missing\""));
+    assert!(json.contains("\"joined\""));
+    assert!(json.contains("\"order\""));
+    assert!(!destination.exists());
+}
+
+#[test]
+fn strict_merge_reports_type_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("merged.csv");
+
+    let output = tabmux()
+        .arg("merge")
+        .arg(fixture("a.csv"))
+        .arg(fixture("d.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .arg("--mode")
+        .arg("strict")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let error = stderr(&output);
+    assert!(error.contains("type conflict on 'amount': float vs text"));
+    assert!(!destination.exists());
+}
+
+#[test]
+fn loose_merge_unions_columns_and_keeps_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("merged.csv");
+
+    let output = tabmux()
+        .arg("merge")
+        .arg(fixture("a.csv"))
+        .arg(fixture("c.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .arg("--mode")
+        .arg("loose")
+        .arg("--add-source-column")
+        .arg("origin")
+        .arg("--dedup")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let text = fs::read_to_string(&destination).unwrap();
+    let lines = text.lines().collect::<Vec<_>>();
+    assert_eq!(lines[0], "id,name,amount,active,joined,origin");
+    assert_eq!(lines.len(), 5);
+    assert!(lines[1].ends_with(",a.csv"));
+    assert!(lines[4].ends_with(",c.csv"));
+    assert!(lines[4].contains("6,Zoe,55,true,,c.csv"));
+}
+
+#[test]
+fn merge_dedup_collapses_identical_rows_before_provenance() {
+    let output = tabmux()
+        .arg("merge")
+        .arg(fixture("a.csv"))
+        .arg(fixture("a.csv"))
+        .arg("-o")
+        .arg("-")
+        .arg("--mode")
+        .arg("loose")
+        .arg("--add-source-column")
+        .arg("origin")
+        .arg("--dedup")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        text.lines().count(),
+        4,
+        "header + three unique rows:\n{text}"
+    );
+    assert!(text.lines().all(|line| !line.contains("a-2")));
+}
+
+#[test]
+fn case_insensitive_headers_can_make_strict_merge_succeed() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("one.csv");
+    let second = dir.path().join("two.csv");
+    fs::write(&first, "ID,Name\n1,Alice\n").unwrap();
+    fs::write(&second, "id,name\n2,Bob\n").unwrap();
+    let destination = dir.path().join("merged.csv");
+
+    let output = tabmux()
+        .arg("merge")
+        .arg(&first)
+        .arg(&second)
+        .arg("-o")
+        .arg(&destination)
+        .arg("--mode")
+        .arg("strict")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+
+    let output = tabmux()
+        .arg("merge")
+        .arg(&first)
+        .arg(&second)
+        .arg("-o")
+        .arg(&destination)
+        .arg("--mode")
+        .arg("strict")
+        .arg("--case-insensitive-headers")
+        .arg("--force")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = fs::read_to_string(&destination).unwrap();
+    assert!(text.starts_with("ID,Name\n"));
+    assert_eq!(text.lines().count(), 3);
+}
+
+#[test]
+fn filter_supports_numeric_and_equality_comparisons() {
+    let output = tabmux()
+        .arg("filter")
+        .arg(fixture("a.csv"))
+        .arg("--where")
+        .arg("amount > 100")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    let lines = text.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[1].starts_with("1,Alice,"));
+    assert!(lines[2].starts_with("3,Carol,"));
+
+    let output = tabmux()
+        .arg("filter")
+        .arg(fixture("a.csv"))
+        .arg("--where")
+        .arg("name == Bob")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(String::from_utf8(output.stdout).unwrap().contains(",Bob,"));
+}
+
+#[test]
+fn filter_reads_stdin_for_shell_pipelines() {
+    let output = run_with_stdin(
+        &["filter", "-", "--where", "amount > 100"],
+        b"name,amount\nAlice,120\nBob,80\n",
+    );
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "name,amount\nAlice,120\n"
+    );
+}
+
+#[test]
+fn filter_reports_non_numeric_values_in_numeric_comparisons() {
+    let output = tabmux()
+        .arg("filter")
+        .arg(fixture("d.csv"))
+        .arg("--where")
+        .arg("amount > 100")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let error = stderr(&output);
+    assert!(error.contains("not numeric"));
+    assert!(error.contains("amount"));
+}
+
+#[test]
+fn sort_supports_multiple_keys_and_directions() {
+    let output = tabmux()
+        .arg("sort")
+        .arg(fixture("a.csv"))
+        .arg("--by")
+        .arg("amount:desc")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    let names = text
+        .lines()
+        .skip(1)
+        .map(|line| line.split(',').nth(1).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Carol", "Alice", "Bob"]);
+
+    let output = tabmux()
+        .arg("sort")
+        .arg(fixture("a.csv"))
+        .arg("--by")
+        .arg("active,name")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let names = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| line.split(',').nth(1).unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Bob", "Alice", "Carol"]);
+}
+
+#[test]
+fn rename_changes_headers_and_rejects_duplicates() {
+    let output = tabmux()
+        .arg("rename")
+        .arg(fixture("a.csv"))
+        .arg("--map")
+        .arg("amount=total,active=enabled")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.starts_with("id,name,total,enabled,joined\n"));
+    assert!(text.contains("1,Alice,120.5,true,2026-01-15"));
+
+    let output = tabmux()
+        .arg("rename")
+        .arg(fixture("a.csv"))
+        .arg("--map")
+        .arg("amount=id")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("duplicate column 'id'"));
+}
+
+#[test]
+fn dedupe_keeps_the_first_occurrence() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("duplicates.csv");
+    fs::write(&input, "id,name\n1,Alice\n2,Bob\n1,Alice\n").unwrap();
+
+    let output = tabmux().arg("dedupe").arg(&input).output().unwrap();
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "id,name\n1,Alice\n2,Bob\n"
+    );
+
+    let output = tabmux()
+        .arg("dedupe")
+        .arg(fixture("a.csv"))
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(String::from_utf8(output.stdout).unwrap().lines().count(), 4);
+}
+
+#[test]
+fn merge_uses_safe_writes_and_dry_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("merged.csv");
+    fs::write(&destination, "sentinel\n").unwrap();
+
+    let output = tabmux()
+        .arg("merge")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("already exists"));
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "sentinel\n");
+
+    let output = tabmux()
+        .arg("merge")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .arg("--force")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(fs::read_to_string(&destination).unwrap().lines().count(), 6);
+
+    let dry = dir.path().join("dry.csv");
+    let output = tabmux()
+        .arg("merge")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&dry)
+        .arg("--dry-run")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(!dry.exists());
+    assert!(stderr(&output).contains("dry-run"));
+}
+
+#[test]
+fn merge_can_write_a_workbook_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("merged.xlsx");
+
+    let output = tabmux()
+        .arg("merge")
+        .arg(fixture("a.csv"))
+        .arg(fixture("b.csv"))
+        .arg("-o")
+        .arg(&destination)
+        .arg("--mode")
+        .arg("strict")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let tables = read_workbook(&destination, FormatId::Xlsx);
+    assert_eq!(tables.len(), 1);
+    assert_eq!(tables[0].name, "a");
+    assert_eq!(tables[0].rows.len(), 5);
+    assert_eq!(tables[0].rows[4][0], CellValue::Int(5));
 }
