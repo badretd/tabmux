@@ -1,0 +1,18 @@
+# `sales.xlsx` contains a chart and non-default styles, so reading it emits
+# warning-level fidelity events. Strict mode must fail before writing.
+version = 1
+
+[options]
+strict = true
+force = true
+
+[[inputs]]
+id = "sales"
+path = "fixtures/sales.xlsx"
+sheet = "Sales"
+
+[[outputs]]
+id = "csv"
+input = "sales"
+path = "/tmp/pipeline-strict.csv"
+format = "csv"

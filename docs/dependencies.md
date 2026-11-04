@@ -400,6 +400,14 @@ the conversion core. The batch reader enforces entry-count, total-uncompressed
 size, and compression-ratio limits and rejects absolute paths, `..` components,
 and Windows-style separators before writing anything.
 
+**Build note (Phase 8)**
+
+`serde` (derive) and `toml` are enabled by the `core` feature for the pipeline
+manifest. The offline registry provides `toml 0.8.23`; the manifest API used
+here is the same as the planned 1.x line. `sha2 0.10` is a dev-dependency used
+only by the determinism test, which compares SHA-256 hashes of two replays.
+No new runtime dependency was added for pipelines.
+
 ### 3.12 Scripting, templating, and plugins
 
 > **CUT.** Embedded scripting, jq, Lua, and WASM plugins are discontinued. `minijinja` may remain only for internal file/sheet-name templates, not user scripting.

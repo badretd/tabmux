@@ -894,6 +894,9 @@ Expected:
 # fixtures/pipeline.toml
 version = 1
 
+[options]
+force = true
+
 [[inputs]]
 id = "sales"
 path = "fixtures/sales.xlsx"
@@ -906,7 +909,7 @@ path = "fixtures/a.csv"
 [[steps]]
 op = "select"
 input = "sales"
-columns = ["id", "email", "amount"]
+columns = ["id", "name", "region", "amount", "sold_on"]
 
 [[steps]]
 op = "filter"
@@ -925,11 +928,18 @@ input = "filtered"
 path = "/tmp/pipeline.xlsx"
 format = "xlsx"
 sheet = "Filtered"
+
+[[outputs]]
+id = "extra-csv"
+input = "extra"
+path = "/tmp/pipeline-extra.csv"
+format = "csv"
 ```
 
 ```sh
 cargo run -- run fixtures/pipeline.toml --dry-run
 # prints inputs, steps, outputs, row estimates; writes nothing
+cargo run -- run fixtures/pipeline.toml --dry-run --save-plan /tmp/plan.json
 cargo run -- run fixtures/pipeline.toml
 sha256sum /tmp/pipeline.csv
 cargo run -- run fixtures/pipeline.toml
@@ -948,6 +958,48 @@ Expected:
 - Manifest round-trips (parse → serialize → parse).
 - No partial outputs on validation failure.
 - Pipeline is the recommended reproducible interface; verb mode still works.
+
+**Implementation note (2026-11-04)**
+
+- **Manifest schema:** `version`, `[options]` (`strict`, `force`, `backup`),
+  `[[inputs]]` (`id`, `path`, `sheet`, `format`, `header`), `[[steps]]`
+  (`op` plus op-specific fields), and `[[outputs]]` (`id`, `input`, `path`,
+  `format`, `sheet`, `header`). Unknown fields and unknown ops are rejected at
+  parse time, before any file is opened.
+- **Step naming:** each step has a primary result name (`id`, or `step-N` when
+  omitted). Ops also publish a past-tense alias (`selected`, `filtered`,
+  `sorted`, `renamed`, `deduped`, `merged`, `concatenated`) so the documented
+  `input = "selected"` / `input = "filtered"` references work. Later steps
+  overwrite an earlier alias; primary names must be unique and may not collide
+  with input ids.
+- **Linear chain:** a step's `input` defaults to the previous step's result, or
+  to the only input when it is the first step. `merge`/`concat` use `with` for
+  their secondary input. There is no fan-out/fan-in graph in v1; multiple
+  outputs may read any named result.
+- **Formats:** inputs use the same detection aliases as verb mode (`xls`,
+  `xlsb`, `xlsm`, `jsonl`, `ndjson`). Outputs are limited to delimited and
+  workbook writers. `format` overrides the path extension; stdout output
+  requires an explicit `format`.
+- **Dry-run and plan:** dry-run executes the chain in memory so unknown columns,
+  schema mismatches, and output naming errors are caught, but it opens no output
+  writer. `--save-plan PATH` writes the deterministic resolved plan JSON (use
+  `-` for stdout). It contains no timestamps, so repeated dry-runs are
+  byte-identical. A dry-run with `--save-plan` writes only the explicitly
+  requested plan file.
+- **Safe writes:** all output destinations are validated before staging. Inputs
+  and outputs may not resolve to the same path, outputs may not share a path,
+  and the plan path may not shadow an input/output. File outputs are staged with
+  `SafeWriter`; if a commit fails, the error lists the already-committed
+  outputs. A stdout output is emitted only after all file outputs commit.
+- **Strict mode:** Phase 8 implements the basic policy: any `Warning` or
+  `Error` event fails with exit code 5 before writing. The loss-report file and
+  the warning-threshold policy arrive in Phase 9. `--no-strict` (or
+  `strict = false`) allows the same run to write.
+- **No seed:** no v1 step is randomized, so a `seed` option is not part of the
+  manifest yet instead of being recorded and ignored.
+- **Fixtures:** `pipeline.toml` is the replayable example; `pipeline-merge.toml`
+  covers concat, `pipeline-invalid.toml` covers an unknown column, and
+  `pipeline-strict.toml` covers a lossy workbook blocked by strict mode.
 
 ---
 

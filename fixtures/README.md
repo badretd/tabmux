@@ -54,6 +54,15 @@ demand by a script in a later phase.
 The three ZIP fixtures are regenerated deterministically with
 `python3 scripts/make-archive-fixtures.py`.
 
+## Pipeline fixtures
+
+| Fixture | Purpose |
+|---|---|
+| `pipeline.toml` | Replayable example: two inputs, `select` + `filter`, CSV/XLSX/delimited outputs, operation aliases (`selected`, `filtered`), and `force = true` for deterministic replay. |
+| `pipeline-merge.toml` | `concat` step over `a.csv` and `b.csv` with loose schema matching and a provenance column. |
+| `pipeline-invalid.toml` | Valid manifest that references an unknown column; must fail before writing. |
+| `pipeline-strict.toml` | Strict-mode pipeline over the lossy `sales.xlsx`; must exit 5 before writing. |
+
 ## Adding fixtures
 
 1. Keep files tiny unless the phase explicitly calls for a stress fixture.

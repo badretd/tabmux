@@ -13,10 +13,12 @@ core = [
     "dep:csv",
     "dep:encoding_rs",
     "dep:globset",
+    "dep:serde",
     "dep:serde_json",
     "dep:tempfile",
     "dep:thiserror",
     "dep:chrono",
+    "dep:toml",
     "dep:walkdir",
     "dep:zip",
 ]
@@ -34,7 +36,9 @@ clap = { version = "=4.5.60", features = ["derive", "env", "cargo", "unicode", "
 csv = { version = "1.4", optional = true }
 encoding_rs = { version = "0.8", optional = true }
 globset = { version = "0.4", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", features = ["preserve_order"], optional = true }
+toml = { version = "0.8", optional = true }
 tempfile = { version = "3.27", optional = true }
 thiserror = { version = "2.0", optional = true }
 walkdir = { version = "2.5", optional = true }
@@ -47,6 +51,9 @@ zip = { version = "9.1", default-features = false, features = ["deflate"], optio
 # not expose for the ODS reader.
 quick-xml = { version = "0.42", optional = true }
 rust_xlsxwriter = { version = "0.102", features = ["chrono", "zlib", "constant_memory", "rust_decimal"], optional = true }
+
+[dev-dependencies]
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

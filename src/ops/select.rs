@@ -5,9 +5,20 @@ use crate::model::{CellValue, Column, Row, Table};
 
 /// Select columns by name or 1-based index and return a derived table.
 pub fn select_columns(table: &Table, specification: &str) -> Result<Table> {
+    let specifications = specification
+        .split(',')
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    select_columns_named(table, &specifications)
+}
+
+/// Select columns from an already-split list of names or indices.
+pub fn select_columns_named(table: &Table, specifications: &[String]) -> Result<Table> {
     let mut indices = Vec::new();
 
-    for raw in specification.split(',') {
+    for raw in specifications {
         let raw = raw.trim();
         if raw.is_empty() {
             continue;

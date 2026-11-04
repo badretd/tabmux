@@ -11,6 +11,66 @@ use crate::formats::archive::{
 use crate::formats::csv::{LineEnding, RaggedPolicy, parse_delimiter};
 use crate::ops::merge::MergeMode;
 
+/// Run a declarative pipeline manifest.
+#[derive(Debug, Clone, Args)]
+pub struct RunArgs {
+    /// Pipeline manifest (TOML).
+    #[arg(value_name = "MANIFEST")]
+    pub manifest: String,
+
+    /// Validate and describe the resolved plan without writing outputs.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Overwrite existing outputs.
+    #[arg(long, conflicts_with = "no_force")]
+    pub force: bool,
+
+    /// Never overwrite existing outputs (overrides the manifest).
+    #[arg(long = "no-force", conflicts_with = "force")]
+    pub no_force: bool,
+
+    /// Fail before writing when the pipeline produces any warning or error.
+    #[arg(long, conflicts_with = "no_strict")]
+    pub strict: bool,
+
+    /// Allow warnings (overrides manifest strict = true).
+    #[arg(long = "no-strict", conflicts_with = "strict")]
+    pub no_strict: bool,
+
+    /// Copy an existing output to a timestamped .bak before replacing it.
+    #[arg(long)]
+    pub backup: bool,
+
+    /// Write the resolved plan as JSON (use - for stdout).
+    #[arg(long, value_name = "PATH")]
+    pub save_plan: Option<String>,
+}
+
+impl RunArgs {
+    pub fn settings(&self) -> crate::pipeline::RunSettings {
+        crate::pipeline::RunSettings {
+            dry_run: self.dry_run,
+            force: if self.force {
+                Some(true)
+            } else if self.no_force {
+                Some(false)
+            } else {
+                None
+            },
+            strict: if self.strict {
+                Some(true)
+            } else if self.no_strict {
+                Some(false)
+            } else {
+                None
+            },
+            backup: if self.backup { Some(true) } else { None },
+            save_plan: self.save_plan.clone(),
+        }
+    }
+}
+
 /// Sheet/table selection shared by commands that can read workbooks.
 #[derive(Debug, Clone, Args)]
 pub struct SheetArgs {

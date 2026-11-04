@@ -1,0 +1,17 @@
+version = 1
+
+[[inputs]]
+id = "sales"
+path = "fixtures/sales.xlsx"
+sheet = "Sales"
+
+[[steps]]
+op = "select"
+input = "sales"
+columns = ["id", "missing"]
+
+[[outputs]]
+id = "csv"
+input = "selected"
+path = "/tmp/pipeline-invalid.csv"
+format = "csv"

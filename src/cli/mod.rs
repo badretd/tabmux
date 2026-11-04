@@ -2,6 +2,7 @@
 
 pub mod args;
 mod batch;
+mod run;
 
 use std::collections::HashSet;
 use std::io::{self, Write as _};
@@ -18,7 +19,7 @@ use crate::ops::{dedupe, filter, merge, rename, schema, select, sort};
 
 use self::args::{
     CellArgs, ConvertArgs, CountArgs, DedupeArgs, DiagnosticsArgs, FilterArgs, HeadArgs, MergeArgs,
-    MergeModeArg, ReadArgs, RenameArgs, RowArgs, SelectArgs, SheetsArgs, SortArgs,
+    MergeModeArg, ReadArgs, RenameArgs, RowArgs, RunArgs, SelectArgs, SheetsArgs, SortArgs,
 };
 
 /// Top-level command-line interface.
@@ -70,6 +71,8 @@ pub enum Command {
     Rename(RenameArgs),
     /// Drop exact duplicate rows.
     Dedupe(DedupeArgs),
+    /// Run a reproducible pipeline manifest.
+    Run(RunArgs),
 }
 
 /// Execute a parsed command.
@@ -89,6 +92,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Command::Sort(args) => sort_rows(args, diagnostics),
         Command::Rename(args) => rename_columns(args, diagnostics),
         Command::Dedupe(args) => dedupe_rows(args, diagnostics),
+        Command::Run(args) => run::run_pipeline(args, diagnostics),
     }
 }
 
@@ -1526,7 +1530,7 @@ fn print_warnings_filtered(
     }
 }
 
-fn print_event(warning: &LossEvent) {
+pub(crate) fn print_event(warning: &LossEvent) {
     match &warning.source {
         Some(source) => eprintln!(
             "tabmux: {}: {}: {} [{}]",

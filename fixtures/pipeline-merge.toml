@@ -1,0 +1,27 @@
+# Two inputs, one concat step, and one output. `fixtures/a.csv` and
+# `fixtures/b.csv` have identical schemas, so strict and loose modes both work.
+version = 1
+
+[options]
+force = true
+
+[[inputs]]
+id = "a"
+path = "fixtures/a.csv"
+
+[[inputs]]
+id = "b"
+path = "fixtures/b.csv"
+
+[[steps]]
+op = "concat"
+input = "a"
+with = "b"
+mode = "loose"
+add_source_column = "origin"
+
+[[outputs]]
+id = "csv"
+input = "concatenated"
+path = "/tmp/pipeline-merge.csv"
+format = "csv"

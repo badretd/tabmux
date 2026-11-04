@@ -1,0 +1,50 @@
+# Example replayable pipeline. Run from the repository root:
+#
+#   cargo run -- run fixtures/pipeline.toml --dry-run
+#   cargo run -- run fixtures/pipeline.toml
+#
+# The step results are named explicitly by `input`, and each op also publishes
+# a convenience alias (`selected`, `filtered`, ...). `force = true` makes a
+# replay overwrite the previous /tmp outputs deterministically.
+version = 1
+
+[options]
+force = true
+
+[[inputs]]
+id = "sales"
+path = "fixtures/sales.xlsx"
+sheet = "Sales"
+
+[[inputs]]
+id = "extra"
+path = "fixtures/a.csv"
+
+[[steps]]
+op = "select"
+input = "sales"
+columns = ["id", "name", "region", "amount", "sold_on"]
+
+[[steps]]
+op = "filter"
+input = "selected"
+expr = "amount > 100"
+
+[[outputs]]
+id = "csv"
+input = "filtered"
+path = "/tmp/pipeline.csv"
+format = "csv"
+
+[[outputs]]
+id = "xlsx"
+input = "filtered"
+path = "/tmp/pipeline.xlsx"
+format = "xlsx"
+sheet = "Filtered"
+
+[[outputs]]
+id = "extra-csv"
+input = "extra"
+path = "/tmp/pipeline-extra.csv"
+format = "csv"

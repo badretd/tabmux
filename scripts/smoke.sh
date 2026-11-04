@@ -584,4 +584,187 @@ grep -q 'no output was written' "$TMP_DIR/batch-strict.err" \
   || fail "strict batch did not explain that nothing was written"
 echo "batch security and strict mode: ok"
 
+section "Phase 8: pipeline manifest, dry-run, replay"
+
+PIPELINE="$TMP_DIR/pipeline.toml"
+PLAN="$TMP_DIR/pipeline-plan.json"
+cat >"$PIPELINE" <<EOF
+version = 1
+
+[options]
+force = true
+
+[[inputs]]
+id = "sales"
+path = "$PWD/fixtures/sales.xlsx"
+sheet = "Sales"
+
+[[inputs]]
+id = "extra"
+path = "$PWD/fixtures/a.csv"
+
+[[steps]]
+op = "select"
+input = "sales"
+columns = ["id", "name", "region", "amount", "sold_on"]
+
+[[steps]]
+op = "filter"
+input = "selected"
+expr = "amount > 100"
+
+[[outputs]]
+id = "csv"
+input = "filtered"
+path = "$TMP_DIR/pipeline.csv"
+format = "csv"
+
+[[outputs]]
+id = "xlsx"
+input = "filtered"
+path = "$TMP_DIR/pipeline.xlsx"
+format = "xlsx"
+sheet = "Filtered"
+EOF
+
+"$BIN" run "$PIPELINE" --dry-run --save-plan "$PLAN" \
+  >/dev/null 2>"$TMP_DIR/pipeline-dry.err"
+[[ ! -e "$TMP_DIR/pipeline.csv" ]] || fail "--dry-run wrote the pipeline CSV"
+[[ ! -e "$TMP_DIR/pipeline.xlsx" ]] || fail "--dry-run wrote the pipeline XLSX"
+grep -q "dry-run: input 'sales'" "$TMP_DIR/pipeline-dry.err" \
+  || fail "pipeline dry-run did not list the inputs"
+grep -q "step 2 filter 'selected' -> 'step-2' (alias 'filtered')" \
+  "$TMP_DIR/pipeline-dry.err" \
+  || fail "pipeline dry-run did not list the resolved steps"
+grep -q "output 'xlsx'" "$TMP_DIR/pipeline-dry.err" \
+  || fail "pipeline dry-run did not list the outputs"
+grep -q 'wrote nothing' "$TMP_DIR/pipeline-dry.err" \
+  || fail "pipeline dry-run did not promise to write nothing"
+grep -q '"alias": "selected"' "$PLAN" \
+  || fail "--save-plan did not record resolved aliases"
+grep -q '"dry_run": true' "$PLAN" \
+  || fail "--save-plan did not record the dry-run flag"
+if grep -q 'started_at' "$PLAN"; then
+  fail "--save-plan contains a timestamp, so it is not deterministic"
+fi
+
+"$BIN" run "$PIPELINE" >/dev/null 2>"$TMP_DIR/pipeline.err"
+[[ "$(head -n 1 "$TMP_DIR/pipeline.csv")" == "id,name,region,amount,sold_on" ]] \
+  || fail "pipeline CSV has the wrong header"
+[[ "$(wc -l <"$TMP_DIR/pipeline.csv" | tr -d ' ')" == "4" ]] \
+  || fail "pipeline filter did not keep three data rows"
+grep -q '^1,Alice,North,120,2026-01-15$' "$TMP_DIR/pipeline.csv" \
+  || fail "pipeline lost the first filtered row"
+grep -q '^Total,Total,,400.5,$' "$TMP_DIR/pipeline.csv" \
+  || fail "pipeline lost the cached formula row"
+[[ "$("$BIN" sheets "$TMP_DIR/pipeline.xlsx")" == "Filtered" ]] \
+  || fail "pipeline XLSX did not use the requested sheet name"
+grep -q 'wrote 2 output(s)' "$TMP_DIR/pipeline.err" \
+  || fail "pipeline did not print an output summary"
+
+cp "$TMP_DIR/pipeline.csv" "$TMP_DIR/pipeline.first.csv"
+"$BIN" run "$PIPELINE" >/dev/null 2>&1
+cmp "$TMP_DIR/pipeline.first.csv" "$TMP_DIR/pipeline.csv" \
+  || fail "pipeline replay changed the CSV output"
+echo "pipeline dry-run and replay: ok"
+
+cat >"$TMP_DIR/pipeline-invalid.toml" <<EOF
+version = 1
+
+[[inputs]]
+id = "sales"
+path = "$PWD/fixtures/sales.xlsx"
+sheet = "Sales"
+
+[[steps]]
+op = "select"
+input = "sales"
+columns = ["id", "missing"]
+
+[[outputs]]
+input = "selected"
+path = "$TMP_DIR/pipeline-invalid.csv"
+format = "csv"
+EOF
+
+set +e
+"$BIN" run "$TMP_DIR/pipeline-invalid.toml" \
+  >/dev/null 2>"$TMP_DIR/pipeline-invalid.err"
+pipeline_invalid_status=$?
+set -e
+[[ "$pipeline_invalid_status" -eq 1 ]] \
+  || fail "invalid pipeline exited $pipeline_invalid_status, expected 1"
+grep -q "unknown column 'missing'" "$TMP_DIR/pipeline-invalid.err" \
+  || fail "invalid pipeline did not name the unknown column"
+[[ ! -e "$TMP_DIR/pipeline-invalid.csv" ]] \
+  || fail "invalid pipeline wrote a partial output"
+
+cat >"$TMP_DIR/pipeline-strict.toml" <<EOF
+version = 1
+
+[options]
+strict = true
+
+[[inputs]]
+id = "sales"
+path = "$PWD/fixtures/sales.xlsx"
+sheet = "Sales"
+
+[[outputs]]
+input = "sales"
+path = "$TMP_DIR/pipeline-strict.csv"
+format = "csv"
+EOF
+
+set +e
+"$BIN" run "$TMP_DIR/pipeline-strict.toml" \
+  >/dev/null 2>"$TMP_DIR/pipeline-strict.err"
+pipeline_strict_status=$?
+set -e
+[[ "$pipeline_strict_status" -eq 5 ]] \
+  || fail "strict pipeline exited $pipeline_strict_status, expected 5"
+grep -q 'excel.chart_dropped' "$TMP_DIR/pipeline-strict.err" \
+  || fail "strict pipeline did not explain the lossy workbook"
+grep -q 'no output was written' "$TMP_DIR/pipeline-strict.err" \
+  || fail "strict pipeline did not explain that nothing was written"
+[[ ! -e "$TMP_DIR/pipeline-strict.csv" ]] \
+  || fail "strict pipeline wrote an output"
+echo "pipeline validation and strict mode: ok"
+
+cat >"$TMP_DIR/pipeline-merge.toml" <<EOF
+version = 1
+
+[options]
+force = true
+
+[[inputs]]
+id = "a"
+path = "$PWD/fixtures/a.csv"
+
+[[inputs]]
+id = "b"
+path = "$PWD/fixtures/b.csv"
+
+[[steps]]
+op = "concat"
+input = "a"
+with = "b"
+mode = "loose"
+add_source_column = "origin"
+
+[[outputs]]
+input = "concatenated"
+path = "$TMP_DIR/pipeline-merge.csv"
+format = "csv"
+EOF
+
+"$BIN" run "$TMP_DIR/pipeline-merge.toml" >/dev/null 2>&1
+[[ "$(wc -l <"$TMP_DIR/pipeline-merge.csv" | tr -d ' ')" == "6" ]] \
+  || fail "pipeline concat step did not write five data rows"
+grep -q ',a.csv$' "$TMP_DIR/pipeline-merge.csv" \
+  || fail "pipeline concat step is missing a.csv provenance"
+grep -q ',b.csv$' "$TMP_DIR/pipeline-merge.csv" \
+  || fail "pipeline concat step is missing b.csv provenance"
+echo "pipeline concat step: ok"
+
 printf '\nsmoke: all checks passed\n'

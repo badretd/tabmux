@@ -10,6 +10,7 @@ pub mod formats;
 pub mod io;
 pub mod model;
 pub mod ops;
+pub mod pipeline;
 
 use std::process::ExitCode;
 

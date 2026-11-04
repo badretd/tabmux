@@ -257,6 +257,75 @@
   nested `Notes`) plus a one-row layout table. `fixtures/header-row.html` covers
   explicit header rows and first-row inference.
 
+## Phase 7 — Directory and ZIP batch ingestion
+
+- **Discovery:** a single directory or `.zip` path is treated as a batch input.
+  Directory traversal is opt-in with `--recursive`; ZIP members are always
+  traversed. Discovery is lexicographic and deterministic.
+- **Outputs:** batch output is a directory of delimited files. Relative member
+  paths are preserved unless `--flatten` is used; collisions get stable numeric
+  suffixes. The default name template is `{stem}.{format}`, or
+  `{stem}.{sheet}.{format}` when every sheet/table is selected.
+- **Unsupported members:** they emit `format.unsupported` and are skipped.
+  `--strict` fails with exit code 5 before creating the output directory.
+- **ZIP safety:** path traversal, absolute member paths, entry-count limits,
+  total uncompressed-size limits, and compression-ratio limits are enforced
+  before any output is written. Defaults are 10,000 entries, 512 MiB total, and
+  a ratio of 200 for members at least 1 MiB; all three are configurable.
+- **Atomicity:** every output is staged with `SafeWriter` before any commit. A
+  commit failure reports which outputs were already written.
+
+## Phase 8 — Pipeline manifest, dry-run, replay
+
+- **Manifest parser:** `toml 0.8` plus `serde` derive. The manifest is parsed
+  and structurally validated (version, unique ids, op-specific fields, output
+  paths, alias collisions) before any I/O. Unknown fields and unknown ops are
+  rejected as usage errors (exit 2).
+- **Executor split:** `pipeline::executor::execute` loads every input and runs
+  every step in memory, producing a `ResolvedPlan`; only then does `run` open
+  `SafeWriter`s. This is what guarantees "wrong column name fails before
+  writing any output" and "no partial outputs on validation failure".
+- **Step results:** each step has a primary result name (`id` or `step-N`) and a
+  convenience alias (`selected`, `filtered`, `sorted`, `renamed`, `deduped`,
+  `merged`, `concatenated`). `input` defaults to the previous step or the only
+  input; `merge`/`concat` name their secondary input with `with`. Multiple
+  outputs can reference any named result. There is no DAG in v1.
+- **Op mapping:** pipeline steps call the same `ops` functions as verb mode:
+  `select`, `filter`, `sort`, `rename`, `dedupe`, and `merge` (with `concat` as
+  the row-append spelling). Strict merge reuses the Phase 5 schema diff and
+  fails before writing.
+- **Inputs:** `sheet` accepts a name or a 1-based integer; `header = false`
+  generates `column_1`, `column_2`, ... for delimited/workbook/HTML inputs.
+  `sheet` is rejected for single-table formats and `header` is rejected for
+  JSON. Explicit `format` overrides extension detection. Manifest paths are
+  resolved against the process working directory, matching verb mode, so either
+  run from the project root or use absolute paths.
+- **Outputs:** `format` overrides the extension; only csv/tsv/xlsx/ods are
+  writable. `sheet` is only valid for workbook outputs and is sanitized with an
+  `output.sheet_name_sanitized` info event when it changes. One output may be
+  `-` for delimited stdout.
+- **Dry-run and plan:** `--dry-run` still reads and executes the chain so naming,
+  schema, and reference errors are caught, but it opens no output writer. The
+  current readers materialize tables, so dry-run reads full inputs to compute
+  row estimates rather than reading headers only; this is a performance
+  limitation, not a write. The plan summary lists inputs, steps, outputs, and
+  row/column estimates. `--save-plan PATH` writes the resolved plan as
+  deterministic JSON (no timestamps; `-` writes to stdout). A dry-run with
+  `--save-plan` writes only that explicitly requested plan file.
+- **Determinism:** results are materialized in input/step order, sheet names are
+  stable, no randomness or timestamps enter data output, and the plan JSON is
+  byte-identical across runs. The integration test compares SHA-256 hashes of
+  two replays.
+- **Strict mode (basic):** any warning or error event fails with exit 5 before
+  writing. This includes workbook fidelity warnings such as
+  `excel.chart_dropped`. `--no-strict` overrides `strict = true`. The loss-report
+  file and warning-threshold policy are Phase 9.
+- **No seed:** no operation is randomized, so `seed` is intentionally absent
+  rather than accepted and ignored.
+- **Fixtures:** `pipeline.toml` is the replayable example; `pipeline-merge.toml`
+  covers concat, `pipeline-invalid.toml` covers an unknown column, and
+  `pipeline-strict.toml` covers a lossy workbook blocked by strict mode.
+
 ## Diagnostics policy
 
 - **Default (`summary`):** read-only commands show only warnings/errors that
@@ -283,8 +352,9 @@
 ## Scope guard
 
 Everything else follows the devplan scope: CSV/TSV/JSON and XLSX/ODS
-read/write, HTML table ingestion, split/stack, row/cell inspection, and
-merge/concat with basic transforms are implemented. Directory/ZIP batch mode,
-the pipeline manifest, the loss-report file, and DuckDB export are still ahead.
-There is no network, and no `fs::write` in command code. All file outputs go
-through `io::SafeWriter`.
+read/write, HTML table ingestion, split/stack, row/cell inspection,
+merge/concat with basic transforms, directory/ZIP batch mode, and the
+reproducible pipeline manifest are implemented. The loss-report file, full
+provenance manifest, warning-threshold strict policy, and DuckDB export/query
+are still ahead. There is no network, and no `fs::write` in command code. All
+file outputs go through `io::SafeWriter`.
