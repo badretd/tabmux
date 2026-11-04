@@ -1,7 +1,8 @@
 //! Shared command-line argument groups.
 
-use clap::Args;
+use clap::{ArgGroup, Args};
 
+use crate::diagnostics::{DiagnosticsLevel, DiagnosticsPolicy};
 use crate::error::{Error, Result};
 use crate::formats;
 use crate::formats::csv::{LineEnding, RaggedPolicy, parse_delimiter};
@@ -95,6 +96,60 @@ pub struct WriteArgs {
     pub dry_run: bool,
 }
 
+/// Diagnostic verbosity shared by every command.
+#[derive(Debug, Clone, Args)]
+pub struct DiagnosticsArgs {
+    /// Diagnostic detail: summary, full, or none.
+    #[arg(long, global = true, value_enum, value_name = "LEVEL")]
+    pub diagnostics: Option<DiagnosticsLevel>,
+
+    /// Suppress diagnostics entirely.
+    #[arg(long, global = true, conflicts_with_all = ["verbose", "debug"])]
+    pub quiet: bool,
+
+    /// Print every diagnostic, including source-fidelity events.
+    #[arg(long, global = true, conflicts_with = "quiet")]
+    pub verbose: bool,
+
+    /// Include filtered-out per-row diagnostics and imply --verbose.
+    #[arg(long, global = true, conflicts_with = "quiet")]
+    pub debug: bool,
+
+    /// Show workbook fidelity events even for read-only commands.
+    #[arg(long = "fidelity-report", global = true)]
+    pub fidelity_report: bool,
+}
+
+impl DiagnosticsArgs {
+    pub fn policy(&self) -> DiagnosticsPolicy {
+        DiagnosticsPolicy::resolve(
+            self.diagnostics,
+            self.quiet,
+            self.verbose,
+            self.debug,
+            self.fidelity_report,
+        )
+    }
+}
+
+/// Terminal display mode for inspection commands.
+#[derive(Debug, Clone, Args)]
+pub struct DisplayArgs {
+    /// Print machine-friendly CSV/TSV without decorative formatting.
+    #[arg(long, conflicts_with = "pretty")]
+    pub raw: bool,
+
+    /// Print an aligned terminal table.
+    #[arg(long, conflicts_with = "raw")]
+    pub pretty: bool,
+}
+
+impl DisplayArgs {
+    pub fn is_pretty(&self) -> bool {
+        self.pretty
+    }
+}
+
 /// Convert one input to one output.
 #[derive(Debug, Clone, Args)]
 pub struct ConvertArgs {
@@ -119,6 +174,19 @@ pub struct ConvertArgs {
     /// Write each selected sheet/table to its own file in the output directory.
     #[arg(long)]
     pub split_sheets: bool,
+
+    /// Filename template for --split-sheets. Supports {stem}, {sheet}, {format},
+    /// {ext}, and {index}.
+    #[arg(long, value_name = "TEMPLATE")]
+    pub name_template: Option<String>,
+
+    /// Concatenate every selected sheet into one output table.
+    #[arg(long, conflicts_with = "split_sheets", requires = "all_sheets")]
+    pub stack: bool,
+
+    /// Add a provenance column with the source sheet name when stacking.
+    #[arg(long, value_name = "NAME", requires = "stack")]
+    pub add_source_column: Option<String>,
 }
 
 impl ConvertArgs {
@@ -167,6 +235,9 @@ pub struct HeadArgs {
 
     #[command(flatten)]
     pub read: ReadArgs,
+
+    #[command(flatten)]
+    pub display: DisplayArgs,
 }
 
 /// Select columns and print them to stdout.
@@ -182,4 +253,56 @@ pub struct SelectArgs {
 
     #[command(flatten)]
     pub read: ReadArgs,
+
+    #[command(flatten)]
+    pub display: DisplayArgs,
+}
+
+/// Print one data row by number or by a simple equality filter.
+#[derive(Debug, Clone, Args)]
+#[command(group(
+    ArgGroup::new("row_selector")
+        .required(true)
+        .args(["number", "where_expr"])
+))]
+pub struct RowArgs {
+    /// Input path, or - for stdin.
+    #[arg(value_name = "INPUT")]
+    pub input: String,
+
+    /// 1-based data row number (the header is not counted).
+    #[arg(long, value_name = "N", conflicts_with = "where_expr")]
+    pub number: Option<usize>,
+
+    /// Row filter such as 'id == 1234' or 'status != closed'.
+    #[arg(long = "where", value_name = "EXPR", conflicts_with = "number")]
+    pub where_expr: Option<String>,
+
+    #[command(flatten)]
+    pub read: ReadArgs,
+
+    #[command(flatten)]
+    pub display: DisplayArgs,
+}
+
+/// Print one cell by row number and column name.
+#[derive(Debug, Clone, Args)]
+pub struct CellArgs {
+    /// Input path, or - for stdin.
+    #[arg(value_name = "INPUT")]
+    pub input: String,
+
+    /// 1-based data row number (the header is not counted).
+    #[arg(long, value_name = "N")]
+    pub row: usize,
+
+    /// Column name or 1-based column index.
+    #[arg(long, value_name = "COLUMN")]
+    pub column: String,
+
+    #[command(flatten)]
+    pub read: ReadArgs,
+
+    #[command(flatten)]
+    pub display: DisplayArgs,
 }

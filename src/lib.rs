@@ -4,6 +4,7 @@
 //! command can be exercised without spawning a process.
 
 pub mod cli;
+pub mod diagnostics;
 pub mod error;
 pub mod formats;
 pub mod io;

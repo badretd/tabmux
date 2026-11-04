@@ -21,12 +21,14 @@ demand by a script in a later phase.
 | `latin1.csv` | Windows-1252/Latin-1 decoding to UTF-8 |
 | `data.json` | JSON array of objects |
 | `data.jsonl` | JSONL input with nested objects, arrays, and nulls |
+| `wide.csv` | Multiline and quoted cells for row/cell addressing and pretty output |
 
 ## Workbook fixtures
 
 | Fixture | Purpose |
 |---|---|
 | `sales.xlsx` | Three sheets (`Sales`, `Regions`, `Notes`), native dates, a merged range, a cached formula, a styled header, and a chart part. Regenerate with `python3 scripts/make-sales-xlsx.py`. |
+| `sales.ods` | Two sheets (`Sales`, `Regions`), native dates, a merged range, a cached formula, and a styled header. Regenerate with `python3 scripts/make-sales-ods.py`. |
 
 ## Adding fixtures
 

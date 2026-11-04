@@ -46,6 +46,7 @@ pub fn read(source: &SourceRef, bytes: &[u8], options: &ReadOptions) -> Result<T
         columns,
         rows,
         warnings,
+        first_data_row: 1,
     })
 }
 

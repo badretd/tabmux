@@ -14,6 +14,10 @@ use crate::model::{SourceRef, Table, TableSet};
 pub mod csv;
 pub mod json;
 #[cfg(feature = "excel")]
+pub mod ods;
+#[cfg(feature = "excel")]
+pub mod workbook;
+#[cfg(feature = "excel")]
 pub mod xlsx;
 
 /// Stable identifier for a supported input/output format.
@@ -265,10 +269,13 @@ pub fn sheet_names(source: &SourceRef, bytes: &[u8], format: FormatId) -> Result
     match format {
         #[cfg(feature = "excel")]
         FormatId::Xlsx => xlsx::sheet_names(source, bytes),
+        #[cfg(feature = "excel")]
+        FormatId::Ods => ods::sheet_names(source, bytes),
         #[cfg(not(feature = "excel"))]
-        FormatId::Xlsx => Err(Error::unsupported(
-            "xlsx support is not compiled in (enable the excel feature)",
-        )),
+        FormatId::Xlsx | FormatId::Ods => Err(Error::unsupported(format!(
+            "{} support is not compiled in (enable the excel feature)",
+            format.label()
+        ))),
         _ => Err(Error::unsupported(format!(
             "{} is not a multi-table workbook",
             format.label()
@@ -334,11 +341,21 @@ pub fn read_tables(
                 sheets: options.sheets.clone(),
             },
         ),
+        #[cfg(feature = "excel")]
+        FormatId::Ods => ods::read(
+            source,
+            bytes,
+            &ods::ReadOptions {
+                has_header: options.has_header,
+                sheets: options.sheets.clone(),
+            },
+        ),
         #[cfg(not(feature = "excel"))]
-        FormatId::Xlsx => Err(Error::unsupported(
-            "xlsx support is not compiled in (enable the excel feature)",
-        )),
-        FormatId::Ods | FormatId::Html => Err(Error::unsupported(format!(
+        FormatId::Xlsx | FormatId::Ods => Err(Error::unsupported(format!(
+            "{} support is not compiled in (enable the excel feature)",
+            format.label()
+        ))),
+        FormatId::Html => Err(Error::unsupported(format!(
             "reading {} is not implemented yet",
             format.label()
         ))),

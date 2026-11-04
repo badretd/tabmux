@@ -179,6 +179,10 @@ pub struct Table {
     pub columns: Vec<Column>,
     pub rows: RowSet,
     pub warnings: Vec<LossEvent>,
+    /// 1-based source row number of the first data row. Readers keep this
+    /// consistent with the row numbers used in diagnostics so filtered
+    /// commands can tell whether an event belongs to an output row.
+    pub first_data_row: u64,
 }
 
 impl Table {
@@ -189,6 +193,7 @@ impl Table {
             columns: Vec::new(),
             rows: Vec::new(),
             warnings: Vec::new(),
+            first_data_row: 1,
         }
     }
 
@@ -204,7 +209,13 @@ impl Table {
             columns,
             rows,
             warnings: Vec::new(),
+            first_data_row: 1,
         }
+    }
+
+    /// Source row number for a zero-based data-row index.
+    pub fn source_row(&self, index: usize) -> u64 {
+        self.first_data_row.saturating_add(index as u64)
     }
 
     pub fn width(&self) -> usize {

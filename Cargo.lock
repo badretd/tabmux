@@ -594,6 +594,7 @@ dependencies = [
  "clap",
  "csv",
  "encoding_rs",
+ "quick-xml",
  "serde_json",
  "tempfile",
  "thiserror",

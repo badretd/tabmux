@@ -224,6 +224,7 @@ pub fn read(
         columns,
         rows,
         warnings,
+        first_data_row: 1,
     })
 }
 

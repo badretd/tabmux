@@ -74,6 +74,62 @@
 - **Trailing empty cells:** leading/trailing empty rows and columns are trimmed.
   No warning is emitted for ordinary trimming because it does not change data.
 
+## Phase 3 — ODS read, all-sheets/per-sheet, row/column output
+
+- **Shared workbook reader:** XLSX and ODS now share `formats/workbook.rs`.
+  `formats/xlsx.rs` and `formats/ods.rs` are thin format-specific entry points.
+- **ODS merged cells:** `calamine 0.37` does not expose merged ranges for ODS.
+  The reader inspects `content.xml` with `quick-xml` and expands
+  `number-columns-spanned` / `number-rows-spanned` ranges itself. ODS formulas
+  still use the cached value and emit `excel.formula_cached_value_only`. ODS
+  `office:time-value` durations such as `PT12H30M00S` become `Time` cells;
+  durations of a day or more stay text. ODS cell styles are reported as
+  `excel.style_dropped`. If package inspection fails, the conversion emits
+  `excel.merged_cell_unsupported` rather than silently claiming there were no
+  merges.
+- **Name templates:** `--split-sheets --name-template` supports `{stem}`,
+  `{sheet}`, `{name}` (alias for `{sheet}`), `{format}`, `{ext}`, and
+  `{index}`. Unknown placeholders, absolute paths, and `..` components are
+  rejected. Collisions get stable `-2`, `-3`, ... suffixes before the
+  extension, compared case-insensitively.
+- **Stacking:** `--all-sheets --stack` unions columns by name in first-seen
+  order and fills missing cells with null. `--add-source-column NAME` appends
+  the sheet name as the last column. Strict/loose schema policy and full merge
+  diagnostics arrive in Phase 5; stacking is intentionally permissive today.
+- **Row/cell addressing:** `row --number` and `cell --row` count data rows
+  only (1-based, header excluded). `row --where` accepts only
+  `column == value` and `column != value`; the value is compared as rendered
+  text and may be single- or double-quoted.
+- **Raw vs pretty:** `--raw` is the default for row/cell output so it can be
+  piped. `row` raw output writes data records without a header; `cell` raw
+  output writes only the cell value. `--pretty` prints an aligned terminal
+  table, and multiline cells become extra aligned physical lines.
+- **Wide fixture:** `fixtures/wide.csv` carries commas, quotes, embedded
+  newlines, and a trailing newline inside a cell for exact-addressing tests.
+
+## Diagnostics policy
+
+- **Default (`summary`):** read-only commands show only warnings/errors that
+  affect the data being displayed. Informational events are reserved for write
+  commands, and source-fidelity events are hidden.
+- **Fidelity events:** `excel.chart_dropped`, `excel.style_dropped`,
+  `excel.formula_cached_value_only` (formula recalculation),
+  `excel.merged_cell_expanded` (merge policy), and the other dropped-workbook
+  feature events are printed only when writing a workbook or when
+  `--fidelity-report` is passed. Writing CSV/TSV does not count as a workbook
+  save, so it stays quiet by default.
+- **`--diagnostics summary|full|none`:** explicit detail control.
+  `--quiet` maps to `none`; `--verbose` maps to `full`; `--debug` implies
+  `full` and additionally restores per-row events for rows filtered out by
+  `row --where`.
+- **Row filtering:** `row --number`, `row --where`, `head`, and `cell` attach
+  diagnostics only to rows that are part of the output. The `row --where`
+  case filters first, then prints diagnostics for matched rows only; use
+  `--debug` to see the rest.
+- **Row numbering:** each `Table` carries `first_data_row`, the 1-based source
+  row number of its first data row, so row-filtered diagnostics can be matched
+  back to the source even after headers or leading blank rows are trimmed.
+
 ## Scope guard
 
 Everything else follows the devplan scope: the XLSX reader is implemented, but

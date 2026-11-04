@@ -1,0 +1,6 @@
+id,name,note,amount
+1,Alice,"first line
+second line",120
+2,Bob,"contains, comma and ""quotes""",80.5
+3,Carol,"trailing newline
+",200

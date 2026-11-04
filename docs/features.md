@@ -106,7 +106,9 @@ tabmux \
 | `--dry-run` | Show the plan, schema, sample, and loss warnings; do not write. |
 | `--explain` | Show the execution plan and cost estimates. |
 | `--progress` | Machine-readable progress on stderr (`json` or `plain`). |
-| `--quiet` / `--verbose` / `--debug` | Diagnostic levels. |
+| `--quiet` / `--verbose` / `--debug` | Diagnostic levels (`--quiet` = none, `--verbose` = full, `--debug` includes filtered-out row detail). |
+| `--diagnostics summary\|full\|none` | Explicit diagnostic detail policy. Read-only commands default to summary. |
+| `--fidelity-report` | Show workbook-fidelity events even when the command is read-only. |
 | `--color auto/always/never` | Color policy; respects `NO_COLOR`. |
 | `--memory-limit` | Soft limit before spilling to disk. |
 | `--temp-dir` | Spill directory. |

@@ -473,6 +473,26 @@ fn xlsx_sheet_converts_to_csv_with_dates_and_cached_values() {
     );
 
     let error = stderr(&output);
+    assert!(
+        !error.contains("excel.merged_cell_expanded"),
+        "default convert should not print fidelity events:\n{error}"
+    );
+    assert!(!error.contains("excel.chart_dropped"));
+    assert!(!error.contains("excel.style_dropped"));
+
+    let fidelity_destination = dir.path().join("sales-fidelity.csv");
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.xlsx"))
+        .arg(&fidelity_destination)
+        .arg("--sheet")
+        .arg("Sales")
+        .arg("--fidelity-report")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let error = stderr(&output);
     assert!(error.contains("excel.merged_cell_expanded"));
     assert!(error.contains("excel.formula_cached_value_only"));
     assert!(error.contains("excel.chart_dropped"));
@@ -635,4 +655,470 @@ fn output_can_be_written_with_the_short_flag_or_to_stdout() {
         String::from_utf8(output.stdout).unwrap().lines().next(),
         Some("name,email,amount")
     );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: ODS read, sheet splitting/stacking, row and cell output
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sheets_lists_ods_workbook_sheets_in_order() {
+    let output = tabmux()
+        .arg("sheets")
+        .arg(fixture("sales.ods"))
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Sales\nRegions\n"
+    );
+}
+
+#[test]
+fn ods_sheet_converts_to_csv_with_dates_merges_and_cached_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("sales.csv");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.ods"))
+        .arg(&destination)
+        .arg("--sheet")
+        .arg("Sales")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let text = fs::read_to_string(&destination).unwrap();
+    assert_eq!(
+        text.lines().next(),
+        Some("id,name,region,amount,sold_on,note")
+    );
+    assert!(text.contains("1,Alice,North,120,2026-01-15,first order"));
+    assert!(text.contains("400.5"));
+    // The merged A5:B5 range is expanded into both covered cells.
+    assert!(text.contains("Total,Total,,400.5,,"));
+
+    let error = stderr(&output);
+    assert!(
+        !error.contains("excel.merged_cell_expanded"),
+        "default convert should not print fidelity events:\n{error}"
+    );
+    assert!(!error.contains("excel.style_dropped"));
+
+    let fidelity_destination = dir.path().join("sales-fidelity.csv");
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.ods"))
+        .arg(&fidelity_destination)
+        .arg("--sheet")
+        .arg("Sales")
+        .arg("--fidelity-report")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let error = stderr(&output);
+    assert!(error.contains("excel.merged_cell_expanded"));
+    assert!(error.contains("excel.formula_cached_value_only"));
+    assert!(error.contains("excel.style_dropped"));
+}
+
+#[test]
+fn ods_split_uses_the_name_template_placeholders() {
+    let dir = tempfile::tempdir().unwrap();
+    let output_dir = dir.path().join("ods");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.ods"))
+        .arg(&output_dir)
+        .arg("--all-sheets")
+        .arg("--split-sheets")
+        .arg("--name-template")
+        .arg("{stem}.{index}.{sheet}.{ext}")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let mut names = fs::read_dir(&output_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        ["sales.1.Sales.csv", "sales.2.Regions.csv"],
+        "unexpected split filenames"
+    );
+}
+
+#[test]
+fn split_name_collisions_get_stable_suffixes() {
+    let dir = tempfile::tempdir().unwrap();
+    let output_dir = dir.path().join("collide");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.ods"))
+        .arg(&output_dir)
+        .arg("--all-sheets")
+        .arg("--split-sheets")
+        .arg("--name-template")
+        .arg("{stem}.{format}")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(stderr(&output).contains("output.sheet_name_sanitized"));
+
+    let mut names = fs::read_dir(&output_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["sales-2.csv", "sales.csv"]);
+}
+
+#[test]
+fn split_name_template_cannot_escape_the_output_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let output_dir = dir.path().join("safe");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.ods"))
+        .arg(&output_dir)
+        .arg("--all-sheets")
+        .arg("--split-sheets")
+        .arg("--name-template")
+        .arg("../{sheet}.csv")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("relative path"));
+    assert!(!output_dir.exists());
+}
+
+#[test]
+fn all_sheets_stack_concatenates_columns_and_adds_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("stacked.csv");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.ods"))
+        .arg(&destination)
+        .arg("--all-sheets")
+        .arg("--stack")
+        .arg("--add-source-column")
+        .arg("sheet")
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let text = fs::read_to_string(&destination).unwrap();
+    let lines = text.lines().collect::<Vec<_>>();
+    assert_eq!(lines[0], "id,name,region,amount,sold_on,note,manager,sheet");
+    assert_eq!(lines.len(), 7, "expected 6 data rows:\n{text}");
+    assert!(lines.iter().any(|line| line.ends_with(",Sales")));
+    assert!(lines.iter().any(|line| line.ends_with(",Regions")));
+    assert!(lines[1].contains("Alice"));
+    assert!(lines[5].contains("North,,,"));
+}
+
+#[test]
+fn stack_requires_all_sheets() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("stacked.csv");
+
+    let output = tabmux()
+        .arg("convert")
+        .arg(fixture("sales.ods"))
+        .arg(&destination)
+        .arg("--stack")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!destination.exists());
+}
+
+#[test]
+fn row_by_number_prints_only_the_data_record() {
+    let output = tabmux()
+        .arg("row")
+        .arg(fixture("sales.xlsx"))
+        .arg("--sheet")
+        .arg("Sales")
+        .arg("--number")
+        .arg("2")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "2,Bob,South,80.5,2026-02-01,\"repeat, with comma\"\n"
+    );
+}
+
+#[test]
+fn row_where_matches_equality_and_inequality() {
+    let output = tabmux()
+        .arg("row")
+        .arg(fixture("sales.xlsx"))
+        .arg("--sheet")
+        .arg("Sales")
+        .arg("--where")
+        .arg("id == 3")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .starts_with("3,Carol,North,200,2026-03-10,")
+    );
+
+    let output = tabmux()
+        .arg("row")
+        .arg(fixture("sales.xlsx"))
+        .arg("--sheet")
+        .arg("Regions")
+        .arg("--where")
+        .arg("manager != Ada")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "South,Grace\n");
+}
+
+#[test]
+fn row_rejects_bad_selectors_and_unknown_where_columns() {
+    let output = tabmux()
+        .arg("row")
+        .arg(fixture("basic.csv"))
+        .arg("--number")
+        .arg("0")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+
+    let output = tabmux()
+        .arg("row")
+        .arg(fixture("basic.csv"))
+        .arg("--number")
+        .arg("99")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("out of range"));
+
+    let output = tabmux()
+        .arg("row")
+        .arg(fixture("basic.csv"))
+        .arg("--where")
+        .arg("missing == 1")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("unknown column 'missing'"));
+}
+
+#[test]
+fn cell_output_is_exact_for_multiline_quoted_data() {
+    let output = tabmux()
+        .arg("cell")
+        .arg(fixture("wide.csv"))
+        .arg("--row")
+        .arg("2")
+        .arg("--column")
+        .arg("note")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "contains, comma and \"quotes\"\n"
+    );
+
+    let output = tabmux()
+        .arg("cell")
+        .arg(fixture("wide.csv"))
+        .arg("--row")
+        .arg("3")
+        .arg("--column")
+        .arg("note")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "trailing newline\n\n"
+    );
+}
+
+#[test]
+fn select_and_head_preserve_multiline_values_and_support_pretty() {
+    let output = tabmux()
+        .arg("select")
+        .arg(fixture("wide.csv"))
+        .arg("--columns")
+        .arg("note")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("\"first line\nsecond line\""));
+    assert!(text.contains("\"trailing newline\n\""));
+
+    let output = tabmux()
+        .arg("head")
+        .arg(fixture("basic.csv"))
+        .arg("--rows")
+        .arg("1")
+        .arg("--pretty")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    let lines = text.lines().collect::<Vec<_>>();
+    assert!(lines[0].contains("name"));
+    assert!(lines[0].contains("|"));
+    assert!(lines[1].contains("---+"));
+    assert!(lines[2].starts_with("Alice"));
+}
+
+#[test]
+fn cell_pretty_prints_a_header_and_value() {
+    let output = tabmux()
+        .arg("cell")
+        .arg(fixture("basic.csv"))
+        .arg("--row")
+        .arg("1")
+        .arg("--column")
+        .arg("email")
+        .arg("--pretty")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.starts_with("email"));
+    assert!(text.contains("alice@example.com"));
+}
+
+#[test]
+fn ods_count_head_and_sheet_index_work() {
+    let count = tabmux()
+        .arg("count")
+        .arg(fixture("sales.ods"))
+        .arg("--sheet")
+        .arg("Regions")
+        .output()
+        .unwrap();
+    assert_success(&count);
+    assert_eq!(String::from_utf8(count.stdout).unwrap(), "2\n");
+
+    let head = tabmux()
+        .arg("head")
+        .arg(fixture("sales.ods"))
+        .arg("--sheet-index")
+        .arg("2")
+        .arg("--rows")
+        .arg("1")
+        .output()
+        .unwrap();
+    assert_success(&head);
+    assert_eq!(
+        String::from_utf8(head.stdout).unwrap(),
+        "region,manager\nNorth,Ada\n"
+    );
+}
+
+#[test]
+fn read_only_commands_hide_workbook_fidelity_by_default() {
+    let output = tabmux()
+        .arg("row")
+        .arg(fixture("sales.xlsx"))
+        .arg("--sheet")
+        .arg("Sales")
+        .arg("--number")
+        .arg("2")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(stderr(&output), "");
+
+    let output = tabmux()
+        .arg("row")
+        .arg(fixture("sales.xlsx"))
+        .arg("--sheet")
+        .arg("Sales")
+        .arg("--number")
+        .arg("2")
+        .arg("--fidelity-report")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let error = stderr(&output);
+    assert!(error.contains("excel.chart_dropped"));
+    assert!(error.contains("excel.style_dropped"));
+    // Row 5 is outside the selected output row, so its merge/formula events
+    // stay hidden even with a fidelity report.
+    assert!(!error.contains("excel.merged_cell_expanded"));
+}
+
+#[test]
+fn row_where_collects_diagnostics_only_for_matched_rows() {
+    let output = tabmux()
+        .arg("row")
+        .arg(fixture("ragged.csv"))
+        .arg("--ragged")
+        .arg("pad")
+        .arg("--where")
+        .arg("name == Bob")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let error = stderr(&output);
+    assert!(error.contains("row 2"), "stderr was:\n{error}");
+    assert!(!error.contains("row 3"), "stderr was:\n{error}");
+
+    let output = tabmux()
+        .arg("row")
+        .arg(fixture("ragged.csv"))
+        .arg("--ragged")
+        .arg("pad")
+        .arg("--where")
+        .arg("name == Bob")
+        .arg("--debug")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let error = stderr(&output);
+    assert!(error.contains("row 2"), "stderr was:\n{error}");
+    assert!(
+        error.contains("row 3"),
+        "--debug should include filtered-out rows:\n{error}"
+    );
+}
+
+#[test]
+fn quiet_and_none_suppress_diagnostics() {
+    for flag in ["--quiet", "--diagnostics"] {
+        let mut command = tabmux();
+        command
+            .arg("select")
+            .arg(fixture("ragged.csv"))
+            .arg("--ragged")
+            .arg("pad")
+            .arg("--columns")
+            .arg("name")
+            .arg(flag);
+        if flag == "--diagnostics" {
+            command.arg("none");
+        }
+        let output = command.output().unwrap();
+        assert_success(&output);
+        assert_eq!(stderr(&output), "", "{flag} did not suppress diagnostics");
+    }
 }

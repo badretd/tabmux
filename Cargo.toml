@@ -9,7 +9,7 @@ description = "Safe, reproducible conversion of messy tabular sources into clean
 [features]
 default = ["core", "excel"]
 core = ["dep:clap", "dep:csv", "dep:encoding_rs", "dep:serde_json", "dep:tempfile", "dep:thiserror", "dep:chrono"]
-excel = ["dep:calamine", "dep:zip"]
+excel = ["dep:calamine", "dep:zip", "dep:quick-xml"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
@@ -24,6 +24,9 @@ thiserror = { version = "2.0", optional = true }
 # the API used here is the same as the planned 0.38 line.
 calamine = { version = "0.37", features = ["dates"], optional = true }
 zip = { version = "9.1", default-features = false, features = ["deflate"], optional = true }
+# Used only to inspect ODS packages for merged-cell spans, which calamine does
+# not expose for the ODS reader.
+quick-xml = { version = "0.42", optional = true }
 
 [profile.release]
 opt-level = 3
